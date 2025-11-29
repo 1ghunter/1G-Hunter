@@ -118,8 +118,12 @@ async function retryFetch(url, opts = {}, retries = FETCH_RETRIES) {
 // Dexscreener correct endpoints
 async function fetchDexPairs(chain) {
   try {
-    const url = `https://api.dexscreener.com/latest/dex/pairs/${chain}`;
+    // FIX: The original URL `https://api.dexscreener.com/latest/dex/pairs/${chain}`
+    // resulted in 404. We must use the /search endpoint or a specific token/pair address endpoint.
+    // Using search for a general/trending set of pairs.
+    const url = `https://api.dexscreener.com/latest/dex/search?q=${chain}`;
     const j = await retryFetch(url);
+    // The search endpoint returns a 'pairs' array which matches the original code's expectation
     return j?.pairs || [];
   } catch {
     return [];
@@ -221,7 +225,7 @@ function passesMemeFilters(p) {
 async function collectCandidates() {
   const sources = [];
 
-  // Dexscreener by chain
+  // Dexscreener by chain (now using search endpoint)
   const chains = Object.values(CHAINS);
   const dexPromises = chains.map((c) => fetchDexPairs(c).catch(() => []));
   const dexResults = await Promise.all(dexPromises);
@@ -365,17 +369,22 @@ async function flexGains() {
   try {
     for (const [addr, data] of Array.from(tracking.entries())) {
       if (!data || data.reported) continue;
+      // Flex check MUST use the correct chain/address endpoint for a single pair
       const chain = (data.chain === "BNB" ? "bsc" : data.chain?.toLowerCase?.()) || "bsc";
-      // fetch latest pair from Dexscreener if possible
+      // Fetch latest pair from Dexscreener using the proper endpoint for a single pair
       const url = `https://api.dexscreener.com/latest/dex/pairs/${chain}/${addr}`;
       const j = await retryFetch(url);
-      const p = j?.pair;
+      
+      // Dexscreener response for a single pair: { pair: Pair | null, pairs: Pair[] | null }
+      const p = j?.pair || j?.pairs?.[0]; 
+      
       if (!p) {
-        // try generic fetch across chains if specific fails
+        // Fallback: try generic fetch across chains if specific fails
         let found = null;
         for (const c of Object.values(CHAINS)) {
+          // Use the correct single-pair endpoint: /latest/dex/pairs/{chain}/{pairAddress}
           const r = await retryFetch(`https://api.dexscreener.com/latest/dex/pairs/${c}/${addr}`);
-          if (r?.pair) { found = r.pair; break; }
+          if (r?.pair || r?.pairs?.[0]) { found = r.pair || r.pairs[0]; break; }
         }
         if (found) {
           // use found
@@ -384,6 +393,7 @@ async function flexGains() {
           continue;
         }
       }
+
       const currentMC = p.marketCap || p.fdv || 0;
       const currentLiq = p.liquidity?.usd || 0;
       const gain = ((currentMC - (data.entryMC || 1)) / (data.entryMC || 1)) * 100;
