@@ -1,5 +1,6 @@
 // =======================================================
-// 1G VAULT V5.1 - FINAL DEPLOYMENT
+// 1G VAULT V5.2 - GUARANTEED DROP CONFIGURATION
+// Filters are set to minimal volume/liquidity to force an immediate call.
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
@@ -16,7 +17,7 @@ const {
 } = require("discord.js");
 
 // --- CONFIGURATION ---
-const BOT_NAME = "1G VAULT V5.1"; // Final bot name for all embeds and logs
+const BOT_NAME = "1G VAULT V5.2"; 
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://jup.ag/"; 
@@ -28,14 +29,15 @@ const MAX_DROP_INTERVAL_MS = Number(process.env.MAX_DROP_INTERVAL_MS) || 120_000
 const FLEX_INTERVAL_MS = Number(process.env.FLEX_INTERVAL_MS) || 90_000;
 const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
 
-// --- MEME FILTER SETTINGS (INSTANT DROP GUARANTEE) ---
+// --- MEME FILTER SETTINGS (MINIMAL REQUIREMENTS) ---
 const MEME_SETTINGS = {
-  minMarketCap: Number(process.env.MC_MIN) || 10,        
-  maxMarketCap: Number(process.env.MC_MAX) || 3_000_000, 
-  minLiquidityUsd: Number(process.env.LIQ_MIN) || 100,   
-  minVolumeH1: Number(process.env.VOL_H1_MIN) || 500,     
-  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 0,  
-  minScore: Number(process.env.SCORE_MIN) || 0,          
+  // SET TO ABSOLUTE MINIMUMS
+  minMarketCap: Number(process.env.MC_MIN) || 1,        
+  maxMarketCap: Number(process.env.MC_MAX) || 10_000_000, 
+  minLiquidityUsd: Number(process.env.LIQ_MIN) || 100,   // $100 min liquidity
+  minVolumeH1: Number(process.env.VOL_H1_MIN) || 1,     // $1 min volume
+  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || -50,  // Allows negative momentum, forces drop
+  minScore: Number(process.env.SCORE_MIN) || 0,           // Score check effectively disabled
   flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, 
 };
 
@@ -107,6 +109,7 @@ const retryFetch = async (url, retries = 2) => {
 
 // --- DATA SOURCES ---
 async function fetchDexPairs(chain) {
+  // Use 'trending' search query which works better than a specific pairs list
   const query = `trending`; 
   const url = `https://api.dexscreener.com/latest/dex/search?q=${query}`;
   const j = await retryFetch(url);
@@ -143,10 +146,15 @@ function scorePair(p) {
   const m5 = p.priceChange?.m5 || 0; 
 
   let s = 10; 
-  s += Math.min(h1 * 2, 40); 
-  s += Math.min(m5 * 1.5, 20); 
+  s += Math.min(h1 * 2, 40); // 2x momentum points
+  s += Math.min(m5 * 1.5, 20); // 1.5x 5min momentum
   if (liq > 20_000) s += 10;
   if (vol > 10_000) s += 10;
+  
+  // Prioritize external feeds which clearly have high-momentum tokens
+  if (p._source === 'axiom' || p._source === 'gmgn') {
+      s += 20;
+  }
 
   return Math.min(99, Math.round(s));
 }
@@ -158,9 +166,12 @@ function passesMemeFilters(p) {
   const h1 = p.priceChange?.h1 || 0;
   const score = scorePair(p);
   
+  // Minimal checks: Only ensure liquidity, minimal volume, and within MC bounds.
   if (mc < MEME_SETTINGS.minMarketCap || mc > MEME_SETTINGS.maxMarketCap) { return false; }
   if (liq < MEME_SETTINGS.minLiquidityUsd) { return false; }
   if (vol < MEME_SETTINGS.minVolumeH1) { return false; }
+  
+  // All other filters are now permissive.
   if (h1 < MEME_SETTINGS.minPriceChangeH1) { return false; }
   if (score < MEME_SETTINGS.minScore) { return false; }
   
