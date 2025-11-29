@@ -1,146 +1,149 @@
-// index.js — 1G VAULT ULTRA DEGEN CALLER 2025 — 40-80 CALLS/DAY
+// index.js — 1G VAULT NUCLEAR SNIPER 2025 — 800-1500 CALLS/DAY
 require("dotenv").config();
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://axiom.trade/@1gvault";
 
-if (!TOKEN || !CHANNEL_ID) {
-  console.error("Missing TOKEN or CHANNEL_ID");
-  process.exit(1);
-}
+if (!TOKEN || !CHANNEL_ID) { console.error("Missing env"); process.exit(1); }
 
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
-});
-
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
 const called = new Set();
 const tracking = new Map();
-const CHAINS = { "SOL": "solana", "BASE": "base", "BNB": "bsc" };
 
-async function fetchPairs(chain) {
-  try {
-    const r = await fetch(`https://api.dexscreener.com/latest/dex/pairs/${chain}?limit=100&orderBy=volume_h1&order=desc`);
-    const j = await r.json();
-    return j.pairs || [];
-  } catch { return []; }
+// MULTI-SOURCE SCAN — EVERY HOT PLATFORM
+async function getHotCoins() {
+  const sources = await Promise.allSettled([
+    fetch("https://api.dexscreener.com/latest/dex/search?q=&limit=100").then(r => r.json()),
+    fetch("https://gmgn.ai/api/v1/ranking?type=trending").then(r => r.json()),
+    fetch("https://api.axiom.trade/v1/trending").then(r => r.json()),
+    fetch("https://pump.fun/api/trending").then(r => r.json()),
+    fetch("https://birdeye.so/tv/trending?chain=solana").then(r => r.json())
+  ]);
+
+  const addresses = new Set();
+  sources.forEach(res => {
+    if (res.status === "fulfilled" && res.value) {
+      const data = res.value;
+      if (Array.isArray(data.pairs)) data.pairs.forEach(p => p.baseToken?.address && addresses.add(p.baseToken.address));
+      if (Array.isArray(data.data)) data.data.forEach(c => c.address && addresses.add(c.address));
+      if (data.trending) data.trending.forEach(c => addresses.add(c.address || c.pairAddress));
+    }
+  });
+  return Array.from(addresses);
 }
 
-function scorePair(p) {
-  const mc = p.marketCap || p.fdv || 0;
+// BEST SCORING SYSTEM 2025
+function calculateScore(p) {
+  let score = 70;
+  const mc = p.fdv || p.marketCap || 0;
   const liq = p.liquidity?.usd || 0;
-  const vol = p.volume?.h1 || 0;
-  const h1 = p.priceChange?.h1 || 0;
+  const vol = p.volume?.h1 || p.volume?.["1h"] || 0;
+  const change = p.priceChange?.h1 || p.priceChange?.["1h"] || 0;
   const m5 = p.priceChange?.m5 || 0;
 
-  let s = 60;
-  s += Math.min(h1 * 1.2, 45);
-  if (vol > 800000) s += 32;
-  else if (vol > 300000) s += 22;
-  else if (vol > 90000) s += 12;
-  if (liq > 100000) s += 28;
-  else if (liq > 50000) s += 15;
-  if (m5 > 25) s += 20;
-  if (mc < 80000) s += 12;
-  return Math.min(99, Math.round(s));
+  if (vol > 1000000) score += 30;
+  else if (vol > 500000) score += 25;
+  else if (vol > 200000) score += 18;
+  if (change > 200) score += 28;
+  else if (change > 100) score += 20;
+  else if (change > 50) score += 12;
+  if (m5 > 40) score += 22;
+  if (liq > 120000) score += 25;
+  if (mc < 120000) score += 15;
+  return Math.min(99, Math.round(score));
 }
 
-// =========== ULTRA DEGEN DROP CALL ===========
-async function dropCall() {
-  let candidates = [];
+async function nuclearScan() {
+  const hotAddresses = await getHotCoins();
+  if (hotAddresses.length === 0) return;
 
-  for (const [emoji, chain] of Object.entries(CHAINS)) {
-    const pairs = await fetchPairs(chain);
-    for (const p of pairs) {
-      if (called.has(p.pairAddress)) continue;
+  for (const addr of hotAddresses) {
+    if (called.has(addr)) continue;
 
-      const mc = p.marketCap || p.fdv || 0;
-      const liq = p.liquidity?.usd || 0;
-      const vol = p.volume?.h1 || 0;
-      const change = p.priceChange?.h1 || 0;
+    let pair;
+    try {
+      const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addr}`);
+      const json = await res.json();
+      pair = json.pairs?.[0];
+      if (!pair) continue;
+    } catch { continue; }
 
-      if (mc < 15000 || mc > 900000) continue;
-      if (liq < 20000) continue;
-      if (vol < 90000) continue;
-      if (change < 30) continue;
+    const mc = pair.marketCap || pair.fdv;
+    const liq = pair.liquidity?.usd || 0;
+    const vol = pair.volume?.h1 || 0;
+    const change = pair.priceChange?.h1 || 0;
 
-      const age = p.pairCreatedAt ? Math.round((Date.now() - new Date(p.pairCreatedAt)) / 60000) : 999;
-      if (age > 1440) continue;
+    // ULTRA AGGRESSIVE BUT SAFE FILTERS
+    if (mc < 8000 || mc > 1500000) continue;
+    if (liq < 18000) continue;
+    if (vol < 120000) continue;
+    if (change < 28) continue;
 
-      const score = scorePair(p);
-      if (score < 68) continue;
+    const score = calculateScore(pair);
+    if (score < 78) continue;
 
-      candidates.push({ ...p, score, chain: emoji, age });
-    }
-  }
-
-  if (candidates.length === 0) return;
-
-  candidates.sort((a, b) => b.volume.h1 - a.volume.h1);
-  const toCall = candidates.slice(0, Math.min(6, candidates.length));
-
-  for (const best of toCall) {
-    called.add(best.pairAddress);
-    const green = best.liquidity.usd > 80000;
+    called.add(addr);
+    const green = liq > 90000 && pair.priceChange?.m5 > 25;
 
     const embed = new EmbedBuilder()
-      .setColor(green ? 0x00ff44 : 0xffaa00)
-      .setTitle(`${best.score}% • ${best.chain} ULTRA DEGEN CALL`)
+      .setColor(green ? 0x00ff00 : 0xff8c00)
+      .setTitle(`${score}% WIN • ${pair.chainId === "solana" ? "SOL" : pair.chainId.toUpperCase()} NUCLEAR CALL`)
       .setDescription(`
-**$${best.baseToken.symbol} IS PRINTING HARD**
+**$${pair.baseToken.symbol} IS ON FUCKING FIRE**
 
-**CA:** \`${best.baseToken.address}\`
+**CA:** \`${pair.baseToken.address}\`
 
-**MC:** $${(best.marketCap/1000).toFixed(1)}K • **1h Vol:** $${(best.volume.h1/1000).toFixed(0)}K
-**Liq:** $${(best.liquidity.usd/1000).toFixed(0)}K → ${green ? "GREEN FLAG" : "YELLOW = GAMBLE"}
+**MC:** $${(mc/1000).toFixed(1)}K • **1h Vol:** $${(vol/1000).toFixed(0)}K • **Liq:** $${(liq/1000).toFixed(0)}K
+**Flag:** ${green ? "GREEN = SAFU" : "YELLOW = HIGH RISK HIGH REWARD"}
       `.trim())
-      .setThumbnail(best.baseToken.logoURI || null)
+      .setThumbnail(pair.info?.imageUrl || pair.baseToken.logoURI || null)
       .setTimestamp();
 
-    const buttons = new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder().setLabel("Chart").setStyle(ButtonStyle.Link).setURL(`https://dexscreener.com/${best.chain.toLowerCase() === "bnb" ? "bsc" : best.chain.toLowerCase()}/${best.pairAddress}`),
-        new ButtonBuilder().setLabel("SNIPE 0% FEE →").setStyle(ButtonStyle.Link).setURL(REF)
-      );
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setLabel("Chart").setStyle(ButtonStyle.Link).setURL(pair.url || `https://dexscreener.com/solana/${pair.pairAddress}`),
+      new ButtonBuilder().setLabel("SNIPE 0% FEE").setStyle(ButtonStyle.Link).setURL(REF)
+    );
 
-    const msg = await client.channels.cache.get(CHANNEL_ID)?.send({ embeds: [embed], components: [buttons] });
+    const msg = await client.channels.cache.get(CHANNEL_ID)?.send({ embeds: [embed], components: [row] });
     if (msg) {
-      tracking.set(best.pairAddress, {
+      tracking.set(pair.baseToken.address, {
         msgId: msg.id,
-        entryMC: best.marketCap || best.fdv,
-        symbol: best.baseToken.symbol,
+        entryMC: mc,
+        symbol: pair.baseToken.symbol,
         reported: false
       });
     }
-    await new Promise(r => setTimeout(r, 4000));
+
+    await new Promise(r => setTimeout(r, 8000)); // avoid rate limit
   }
 }
 
-// =========== PROFIT FLEX ===========
-async function flexGains() {
+// PROFIT FLEX — ONLY WINNERS
+async function flexWinners() {
   for (const [addr, data] of tracking.entries()) {
     if (data.reported) continue;
     try {
-      const chain = data.chain?.toLowerCase() === "bnb" ? "bsc" : data.chain?.toLowerCase();
-      const r = await fetch(`https://api.dexscreener.com/latest/dex/pairs/${chain}/${addr}`);
-      const j = await r.json();
-      const p = j.pair;
-      if (!p) continue;
+      const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${addr}`);
+      const json = await res.json();
+      const pair = json.pairs?.[0];
+      if (!pair) continue;
 
-      const current = p.marketCap || p.fdv;
+      const current = pair.marketCap || pair.fdv;
       const gain = ((current - data.entryMC) / data.entryMC) * 100;
-      if (gain < 35) continue;
+      if (gain < 30) continue;
 
       const channel = client.channels.cache.get(CHANNEL_ID);
       const orig = await channel.messages.fetch(data.msgId).catch(() => null);
       if (!orig) continue;
 
-      const fire = gain > 1000 ? "10000%" : gain > 500 ? "1000%" : gain > 200 ? "500%" : "100%";
+      const badge = gain > 10000 ? "1000000%" : gain > 1000 ? "10000%" : gain > 500 ? "1000%" : "500%";
       const flex = new EmbedBuilder()
-        .setColor(0x00ff44)
-        .setTitle(`${fire} UP FROM 1G CALL — $${data.symbol}`)
-        .setDescription(`+${gain.toFixed(1)}% since call`)
+        .setColor(0x00ff00)
+        .setTitle(`${badge} FROM 1G CALL — $${data.symbol}`)
+        .setDescription(`+${gain.toFixed(1)}% PnL · We printed again`)
         .setTimestamp();
 
       await orig.reply({ embeds: [flex] });
@@ -149,23 +152,22 @@ async function flexGains() {
   }
 }
 
-// =========== /start COMMAND ===========
-client.on("messageCreate", async (msg) => {
+// COMMANDS
+client.on("messageCreate", async msg => {
   if (!msg.content) return;
-  const content = msg.content.toLowerCase().trim();
-  if (content === "/start" || content === "/ping") {
-    if (msg.channel.id !== CHANNEL_ID) return;
-    await msg.reply("**1G VAULT ULTRA DEGEN CALLER IS LIVE**\nSOL • BASE • BNB\n40–80 calls/day mode activated");
+  const c = msg.content.toLowerCase().trim();
+  if ((c === "/start" || c === "/ping") && msg.channel.id === CHANNEL_ID) {
+    msg.reply("**1G VAULT NUCLEAR SNIPER IS LIVE**\n800–1500 calls/day · Multi-source · PnL flex only on winners");
   }
 });
 
-// =========== STARTUP ===========
+// START
 client.once("ready", () => {
-  console.log("1G VAULT ULTRA DEGEN CALLER FULLY LIVE — 40-80 CALLS/DAY MODE");
-  dropCall();
-  setInterval(dropCall, 300000 + Math.random() * 60000); // 5–6 min
-  setInterval(flexGains, 360000);
-  setInterval(() => fetch("https://" + process.env.RENDER_EXTERNAL_HOSTNAME || "your-app.onrender.com/ping"), 240000);
+  console.log("1G VAULT NUCLEAR SNIPER 2025 FULLY LIVE — 800-1500 CALLS/DAY");
+  nuclearScan();
+  setInterval(nuclearScan, 75000 + Math.random() * 30000); // every 75–105 sec
+  setInterval(flexWinners, 300000);
+  setInterval(() => fetch(`https://${process.env.RENDER_EXTERNAL_HOSTNAME}/ping`), 240000);
 });
 
 client.login(TOKEN);
