@@ -1,4 +1,4 @@
-// index.js — 1G VAULT ULTIMATE CALLER 2025 FINAL
+// index.js — 1G VAULT ULTIMATE CALLER — FINAL 2025 VERSION
 require("dotenv").config();
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 
@@ -7,123 +7,109 @@ const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://axiom.trade/@1gvault";
 
 if (!TOKEN || !CHANNEL_ID) {
-  console.error("MISSING DISCORD_TOKEN OR CHANNEL_ID — FIX YOUR ENV VARS");
+  console.error("Missing TOKEN or CHANNEL_ID — check Render env");
   process.exit(1);
 }
 
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
-});
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
 
-const alreadyCalled = new Set();
+const called = new Set();
 const tracking = new Map();
 
-const CHAINS = {
-  "SOL": "solana",
-  "BASE": "base",
-  "BNB": "bsc"
-};
+const CHAINS = { SOL: "solana", BASE: "base", BNB: "bsc" };
 
 async function fetchPairs(chain) {
   try {
-    const r = await fetch(`https://api.dexscreener.com/latest/dex/pairs/${chain}?limit=100&orderBy=volume_h1&order=desc`);
+    const r = await fetch(`https://api.dexscreener.com/latest/dex/pairs/${chain}?limit=80&orderBy=volume_h1&order=desc`);
     const j = await r.json();
     return j.pairs || [];
-  } catch (e) {
-    return [];
-  }
+  } catch { return []; }
 }
 
-function getScore(p) {
+function scorePair(p) {
   const mc = p.marketCap || p.fdv || 0;
   const liq = p.liquidity?.usd || 0;
   const vol = p.volume?.h1 || 0;
   const h1 = p.priceChange?.h1 || 0;
   const m5 = p.priceChange?.m5 || 0;
 
-  let score = 60;
-  score += Math.min(h1 * 1.1, 40);
-  if (vol > 600000) score += 28;
-  else if (vol > 300000) score += 18;
-  if (liq > 100000) score += 25;
-  else if (liq > 60000) score += 15;
-  if (m5 > 25) score += 20;
-  if (mc < 120000) score += 12;
-  if (mc < 60000) score += 8;
-  return Math.min(99, Math.round(score));
+  let s = 62;
+  s += Math.min(h1 * 1.15, 42);
+  if (vol > 700000) s += 30;
+  else if (vol > 350000) s += 20;
+  if (liq > 110000) s += 28;
+  else if (liq > 65000) s += 16;
+  if (m5 > 28) s += 22;
+  if (mc < 110000) s += 14;
+  if (mc < 60000) s += 10;
+  return Math.min(99, Math.round(s));
 }
 
-async function sendCall() {
+async function dropCall() {
   let best = null;
-
   for (const [emoji, chain] of Object.entries(CHAINS)) {
     const pairs = await fetchPairs(chain);
     for (const p of pairs) {
-      if (alreadyCalled.has(p.pairAddress)) continue;
-
+      if (called.has(p.pairAddress)) continue;
       const mc = p.marketCap || p.fdv;
-      if (mc < 30000 || mc > 380000) continue;
-      if (p.liquidity?.usd < 40000) continue;
-      if (p.volume?.h1 < 180000) continue;
-      if (p.priceChange?.h1 < 60) continue;
+      if (mc < 32000 || mc > 420000) continue;
+      if (p.liquidity?.usd < 48000) continue;
+      if (p.volume?.h1 < 220000) continue;
+      if (p.priceChange?.h1 < 64) continue;
 
-      const ageMin = p.pairCreatedAt ? Math.round((Date.now() - new Date(p.pairCreatedAt)) / 60000) : 999;
-      if (ageMin > 540) continue;
+      const age = p.pairCreatedAt ? Math.round((Date.now() - new Date(p.pairCreatedAt)) / 60000) : 999;
+      if (age > 600) continue;
 
-      const score = getScore(p);
-      if (score < 84) continue;
+      const score = scorePair(p);
+      if (score < 86) continue;
 
-      if (!best || score > best.score) {
-        best = { ...p, score, chain: emoji, age: ageMin };
-      }
+      if (!best || score > best.score) best = { ...p, score, chain: emoji, age };
     }
   }
 
   if (!best) return;
 
-  alreadyCalled.add(best.pairAddress);
-  const greenFlag = best.liquidity.usd > 90000 && best.priceChange.m5 > 20;
+  called.add(best.pairAddress);
+  const green = best.liquidity.usd > 95000 && best.priceChange.m5 > 22;
 
   const embed = new EmbedBuilder()
-    .setColor(greenFlag ? 0x00ff44 : 0xffaa00)
-    .setTitle(`${best.score}% WIN RATE — 1G VAULTIMATE CALL`)
+    .setColor(green ? 0x00ff44 : 0xffaa00)
+    .setTitle(`${best.score}% WIN PROBABILITY — 1G VAULT CALL`)
     .setDescription(`
-**${best.chain} DEGEN ROCKET** — $${best.baseToken.symbol}
+**${best.chain} DEGEN MOONSHOT** — $${best.baseToken.symbol}
 
 **CA:** \`${best.baseToken.address}\`
 
-**MC:** $${(best.marketCap/1000).toFixed(1)}K • **Age:** ${best.age}min
+**MC:** $${(best.marketCap/1000).toFixed(1)}K • **Age:** ${best.age}m
 **1h Vol:** $${(best.volume.h1/1000).toFixed(0)}K
-**Liq:** $${(best.liquidity.usd/1000).toFixed(0)}K → **ANTI-RUG ${greenFlag ? "GREEN" : "YELLOW"}**
+**Liq:** $${(best.liquidity.usd/1000).toFixed(0)}K → **ANTI-RUG ${green ? "GREEN" : "YELLOW"}**
 
-${greenFlag ? "SAFEST PLAY ON CHAIN RN" : "YELLOW = PURE GAMBLE = 50-500x"}
+${green ? "SAFEST BANGER RIGHT NOW" : "YELLOW = HIGH RISK = 50-1000x POTENTIAL"}
     `.trim())
     .setThumbnail(best.baseToken.logoURI || null)
     .setTimestamp()
-    .setFooter({ text: "1G Vault • Not financial advice • DYOR" });
+    .setFooter({ text: "1G Vault • DYOR • Not financial advice" });
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setLabel("Live Chart").setStyle(ButtonStyle.Link).setURL(`https://dexscreener.com/${best.chain === "BNB" ? "bsc" : best.chain.toLowerCase()}/${best.pairAddress}`),
-    new ButtonBuilder().setLabel("SNIPE 0% FEE →").setStyle(ButtonStyle.Link).setURL(REF)
-  );
+  const buttons = new ActionRowBuilder()
+    .addComponents(
+      new ButtonBuilder().setLabel("Chart").setStyle(ButtonStyle.Link).setURL(`https://dexscreener.com/${best.chain === "BNB" ? "bsc" : best.chain.toLowerCase()}/${best.pairAddress}`),
+      new ButtonBuilder().setLabel("SNIPE 0% FEE →").setStyle(ButtonStyle.Link).setURL(REF)
+    );
 
-  const msg = await client.channels.cache.get(CHANNEL_ID)?.send({ embeds: [embed], components: [row] });
-
+  const msg = await client.channels.cache.get(CHANNEL_ID)?.send({ embeds: [embed], components: [buttons] });
   if (msg) {
     tracking.set(best.pairAddress, {
       msgId: msg.id,
       entryMC: best.marketCap || best.fdv,
       symbol: best.baseToken.symbol,
-      chain: best.chain,
       reported: false
     });
   }
 }
 
-async function checkProfits() {
-  for (const [addr, data] of tracking.entries()) {
+async function flexGains() {
+  for (const [addr, data] of tracking) {
     if (data.reported) continue;
-
     try {
       const chain = data.chain === "BNB" ? "bsc" : data.chain.toLowerCase();
       const r = await fetch(`https://api.dexscreener.com/latest/dex/pairs/${chain}/${addr}`);
@@ -131,33 +117,35 @@ async function checkProfits() {
       const p = j.pair;
       if (!p) continue;
 
-      const currentMC = p.marketCap || p.fdv;
-      const gain = ((currentMC - data.entryMC) / data.entryMC) * 100;
+      const current = p.marketCap || p.fdv;
+      const gain = ((current - data.entryMC) / data.entryMC) * 100;
       if (gain < 30) continue;
 
       const channel = client.channels.cache.get(CHANNEL_ID);
-      const original = await channel.messages.fetch(data.msgId).catch(() => null);
-      if (!original) continue;
+      const orig = await channel.messages.fetch(data.msgId).catch(() => null);
+      if (!orig) continue;
 
-      const fire = gain > 10000 ? "100000%" : gain > 1000 ? "10000%" : gain > 500 ? "1000%" : gain > 200 ? "500%" : "100%";
+      const fire = gain > 10000 ? "100000%" : gain > 1000 ? "10000%" : gain > 500 ? "1000%" : "500%";
 
       const flex = new EmbedBuilder()
         .setColor(0x00ff44)
-        .setTitle(`${fire} $${data.symbol} IS UP ${gain.toFixed(1)}% FROM 1G CALL`)
-        .setDescription(gain > 1000 ? "WE JUST PRINTED A LEGEND" : "told you it was cooking")
+        .setTitle(`${fire} $${data.symbol} UP ${gain.toFixed(1)}% FROM 1G CALL`)
+        .setDescription(gain > 1000 ? "WE JUST PRINTED A LEGEND" : "told you boys")
         .setTimestamp();
 
-      await original.reply({ embeds: [flex] });
+      await orig.reply({ embeds: [flex] });
       data.reported = true;
-    } catch (e) {}
+    } catch {}
   }
 }
 
-client.on("ready", () => {
-  console.log("1G VAULT ULTIMATE CALLER IS LIVE — SOL + BASE + BNB + PROFIT FLEX");
-  sendCall();
-  setInterval(sendCall, 690000 + Math.floor(Math.random() * 60000)); // ~11.5 min
-  setInterval(checkProfits, 480000); // every 8 min
+// KEEP RENDER ALIVE + CALLS
+client.once("ready", () => {
+  console.log("1G VAULT ULTIMATE CALLER FULLY LIVE — SOL + BASE + BNB + PROFIT FLEX");
+  dropCall();
+  setInterval(dropCall, 680000 + Math.random() * 80000);
+  setInterval(flexGains, 420000);
+  setInterval(() => fetch("https://" + process.env.RENDER_EXTERNAL_HOSTNAME || "your-app.onrender.com"), 240000);
 });
 
 client.login(TOKEN);
