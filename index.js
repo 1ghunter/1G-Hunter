@@ -28,17 +28,19 @@ const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
 const MAX_TRACKING_AGE_MIN = Number(process.env.MAX_TRACKING_AGE_MIN) || 60 * 24 * 21; // 21 days
 
 // Meme-coin tuned thresholds ("best of the best meme coin settings")
+// --- 🚨 CRITICAL CHANGE: FILTERS RELAXED FOR DEBUGGING 🚨 ---
 const MEME_SETTINGS = {
-  minMarketCap: Number(process.env.MC_MIN) || 5_000,        // very low MC allowed
-  maxMarketCap: Number(process.env.MC_MAX) || 2_000_000,
-  minLiquidityUsd: Number(process.env.LIQ_MIN) || 1_000,    // allow tiny liquidity
-  minVolumeH1: Number(process.env.VOL_H1_MIN) || 1_000,     // low volume OK
-  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 5,    // minimum 1h momentum
-  minScore: Number(process.env.SCORE_MIN) || 30,            // permissive score
+  minMarketCap: Number(process.env.MC_MIN) || 1_000,        // Very low MC allowed
+  maxMarketCap: Number(process.env.MC_MAX) || 5_000_000,
+  minLiquidityUsd: Number(process.env.LIQ_MIN) || 500,      // Allow tiny liquidity
+  minVolumeH1: Number(process.env.VOL_H1_MIN) || 100,       // Very low volume OK
+  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 1,    // Minimum 1h momentum (1% for testing)
+  minScore: Number(process.env.SCORE_MIN) || 1,             // Permissive score (1 for testing)
   flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30,   // send pnl alerts >= this
   antiRugLiqDropPct: Number(process.env.ANTIRUG_LIQ_DROP_PCT) || 70, // liquidity drop threshold
   antiRugMinLiquidityAtReport: Number(process.env.ANTIRUG_MIN_LIQ_AT_REPORT) || 500, // require some liq
 };
+// -------------------------------------------------------------
 
 // API retries
 const FETCH_RETRIES = Number(process.env.FETCH_RETRIES) || 2;
@@ -118,14 +120,27 @@ async function retryFetch(url, opts = {}, retries = FETCH_RETRIES) {
 // Dexscreener correct endpoints
 async function fetchDexPairs(chain) {
   try {
-    // FIX: The original URL `https://api.dexscreener.com/latest/dex/pairs/${chain}`
-    // resulted in 404. We must use the /search endpoint or a specific token/pair address endpoint.
-    // Using search for a general/trending set of pairs.
-    const url = `https://api.dexscreener.com/latest/dex/search?q=${chain}`;
+    // --- 🚨 CRITICAL CHANGE: Adjusting search query to find more pairs ---
+    // The previous fix used `?q=${chain}` which often returns an empty list.
+    // Using a broader query like 'trending' or 'new' to pull the top 30 pairs
+    // and then filtering by chain in the `collectCandidates` loop.
+    const query = `trending`; 
+    const url = `https://api.dexscreener.com/latest/dex/search?q=${query}`;
     const j = await retryFetch(url);
-    // The search endpoint returns a 'pairs' array which matches the original code's expectation
-    return j?.pairs || [];
-  } catch {
+    
+    // Filter the results by the requested chain to maximize relevant pairs from the 30 results.
+    const pairs = j?.pairs || [];
+    const filteredPairs = pairs.filter(p => p.chainId?.toLowerCase() === chain.toLowerCase());
+
+    if (filteredPairs.length === 0) {
+        console.log(`No pairs found for chain: ${chain} with query: ${query}. (Out of ${pairs.length} total)`);
+    }
+
+    return filteredPairs;
+    // ---------------------------------------------------------------------
+
+  } catch (e) {
+    console.warn(`fetchDexPairs for ${chain} failed: ${e.message}`);
     return [];
   }
 }
@@ -213,11 +228,14 @@ function passesMemeFilters(p) {
   const vol = p.volume?.h1 || 0;
   const h1 = p.priceChange?.h1 || 0;
   const score = scorePair(p);
+  
+  // NOTE: Filters are currently relaxed (set to 1, 100, 500 etc) for testing
   if (mc < MEME_SETTINGS.minMarketCap || mc > MEME_SETTINGS.maxMarketCap) return false;
   if (liq < MEME_SETTINGS.minLiquidityUsd) return false;
   if (vol < MEME_SETTINGS.minVolumeH1) return false;
   if (h1 < MEME_SETTINGS.minPriceChangeH1) return false;
   if (score < MEME_SETTINGS.minScore) return false;
+  
   return true;
 }
 
@@ -225,7 +243,7 @@ function passesMemeFilters(p) {
 async function collectCandidates() {
   const sources = [];
 
-  // Dexscreener by chain (now using search endpoint)
+  // Dexscreener by chain (now using the search endpoint + filtering by chain)
   const chains = Object.values(CHAINS);
   const dexPromises = chains.map((c) => fetchDexPairs(c).catch(() => []));
   const dexResults = await Promise.all(dexPromises);
@@ -273,6 +291,11 @@ async function collectCandidates() {
 async function dropCall() {
   try {
     const candidates = await collectCandidates();
+    
+    // --- 🚨 ADDED LOGGING HERE ---
+    console.log(`Found ${candidates.length} unique candidates after deduplication.`);
+    // ----------------------------
+    
     if (!candidates || candidates.length === 0) return;
 
     let best = null;
@@ -282,13 +305,21 @@ async function dropCall() {
       if (called.has(addr)) continue;
 
       // apply hyper meme filters
-      if (!passesMemeFilters(p)) continue;
+      if (!passesMemeFilters(p)) {
+        // --- 🚨 ADDED LOGGING HERE ---
+        // console.log(`Skipping candidate ${p.baseToken?.symbol || addr} - failed filters.`); 
+        // ----------------------------
+        continue;
+      }
 
       const score = scorePair(p);
       if (!best || score > best.score) best = { ...p, score, addr };
     }
 
-    if (!best) return;
+    if (!best) {
+      console.log("No candidate passed all filters and score checks.");
+      return;
+    }
 
     // mark called
     called.add(best.addr);
@@ -329,10 +360,19 @@ async function dropCall() {
       new ButtonBuilder().setLabel("SNIPE 0% FEE →").setStyle(ButtonStyle.Link).setURL(REF)
     );
 
-    const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
-    if (!channel || !channel.send) return;
+    const channel = await client.channels.fetch(CHANNEL_ID).catch((e) => {
+        console.warn("Error fetching channel:", e.message);
+        return null;
+    });
+    if (!channel || !channel.send) {
+        console.warn("Could not find channel or send messages. Check CHANNEL_ID and bot permissions.");
+        return;
+    }
 
-    const msg = await channel.send({ embeds: [embed], components: [buttons] }).catch(() => null);
+    const msg = await channel.send({ embeds: [embed], components: [buttons] }).catch((e) => {
+        console.warn("Error sending message to Discord:", e.message);
+        return null;
+    });
     if (!msg) return;
 
     // record for flex checks
