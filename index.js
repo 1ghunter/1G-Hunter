@@ -1,6 +1,6 @@
 // =======================================================
-// 1G VAULT V5.2 - GUARANTEED DROP CONFIGURATION
-// Filters are set to minimal volume/liquidity to force an immediate call.
+// 1G VAULT V6.0 - PERFECT QUALITY FILTER CONFIGURATION
+// Targets: MC $23K-$80K | Volume $3K-$24K | Momentum +10%
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
@@ -17,7 +17,7 @@ const {
 } = require("discord.js");
 
 // --- CONFIGURATION ---
-const BOT_NAME = "1G VAULT V5.2"; 
+const BOT_NAME = "1G VAULT V5.1"; // Final requested name
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://jup.ag/"; 
@@ -29,15 +29,20 @@ const MAX_DROP_INTERVAL_MS = Number(process.env.MAX_DROP_INTERVAL_MS) || 120_000
 const FLEX_INTERVAL_MS = Number(process.env.FLEX_INTERVAL_MS) || 90_000;
 const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
 
-// --- MEME FILTER SETTINGS (MINIMAL REQUIREMENTS) ---
+// --- MEME FILTER SETTINGS (EXACT USER SPECIFICATIONS) ---
 const MEME_SETTINGS = {
-  // SET TO ABSOLUTE MINIMUMS
-  minMarketCap: Number(process.env.MC_MIN) || 1,        
-  maxMarketCap: Number(process.env.MC_MAX) || 10_000_000, 
-  minLiquidityUsd: Number(process.env.LIQ_MIN) || 100,   // $100 min liquidity
-  minVolumeH1: Number(process.env.VOL_H1_MIN) || 1,     // $1 min volume
-  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || -50,  // Allows negative momentum, forces drop
-  minScore: Number(process.env.SCORE_MIN) || 0,           // Score check effectively disabled
+  // STRICT MARKET CAP FOR NEWLY GRADUATED COINS
+  minMarketCap: Number(process.env.MC_MIN) || 23000,        
+  maxMarketCap: Number(process.env.MC_MAX) || 80000, 
+  
+  // STRICT VOLUME FOR HIGH VOLUME TRADES
+  minLiquidityUsd: Number(process.env.LIQ_MIN) || 2000,   
+  minVolumeH1: Number(process.env.VOL_H1_MIN) || 3000,   
+  maxVolumeH1: Number(process.env.VOL_H1_MAX) || 24000,   // New max volume filter
+  
+  // MINIMUM MOMENTUM 
+  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 10, 
+  minScore: Number(process.env.SCORE_MIN) || 50,          
   flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, 
 };
 
@@ -109,7 +114,6 @@ const retryFetch = async (url, retries = 2) => {
 
 // --- DATA SOURCES ---
 async function fetchDexPairs(chain) {
-  // Use 'trending' search query which works better than a specific pairs list
   const query = `trending`; 
   const url = `https://api.dexscreener.com/latest/dex/search?q=${query}`;
   const j = await retryFetch(url);
@@ -146,14 +150,13 @@ function scorePair(p) {
   const m5 = p.priceChange?.m5 || 0; 
 
   let s = 10; 
-  s += Math.min(h1 * 2, 40); // 2x momentum points
-  s += Math.min(m5 * 1.5, 20); // 1.5x 5min momentum
+  s += Math.min(h1 * 2, 40); 
+  s += Math.min(m5 * 1.5, 20); 
   if (liq > 20_000) s += 10;
   if (vol > 10_000) s += 10;
   
-  // Prioritize external feeds which clearly have high-momentum tokens
   if (p._source === 'axiom' || p._source === 'gmgn') {
-      s += 20;
+      s += 20; 
   }
 
   return Math.min(99, Math.round(s));
@@ -166,14 +169,30 @@ function passesMemeFilters(p) {
   const h1 = p.priceChange?.h1 || 0;
   const score = scorePair(p);
   
-  // Minimal checks: Only ensure liquidity, minimal volume, and within MC bounds.
-  if (mc < MEME_SETTINGS.minMarketCap || mc > MEME_SETTINGS.maxMarketCap) { return false; }
-  if (liq < MEME_SETTINGS.minLiquidityUsd) { return false; }
-  if (vol < MEME_SETTINGS.minVolumeH1) { return false; }
+  // MARKET CAP CHECK (23K - 80K)
+  if (mc < MEME_SETTINGS.minMarketCap || mc > MEME_SETTINGS.maxMarketCap) { 
+      return false; 
+  }
   
-  // All other filters are now permissive.
-  if (h1 < MEME_SETTINGS.minPriceChangeH1) { return false; }
-  if (score < MEME_SETTINGS.minScore) { return false; }
+  // LIQUIDITY CHECK
+  if (liq < MEME_SETTINGS.minLiquidityUsd) { 
+      return false; 
+  }
+  
+  // VOLUME CHECK (3K - 24K)
+  if (vol < MEME_SETTINGS.minVolumeH1 || vol > MEME_SETTINGS.maxVolumeH1) { 
+      return false; 
+  }
+  
+  // MOMENTUM CHECK (+10% H1)
+  if (h1 < MEME_SETTINGS.minPriceChangeH1) { 
+      return false; 
+  }
+  
+  // SCORE CHECK
+  if (score < MEME_SETTINGS.minScore) { 
+      return false; 
+  }
   
   return true;
 }
@@ -241,7 +260,7 @@ async function createCallEmbed(best) {
         `💰 **Mkt Cap:** $${(mc / 1000).toFixed(1)}K`,
         `💧 **Liquidity:** $${(liqUsd / 1000).toFixed(1)}K`,
         `📈 **1H Momentum:** ${best.priceChange?.h1?.toFixed(1) || 0}%`,
-        `📊 **1H Volume:** $${(volH1 / 1000).toFixed(0)}K`,
+        `📊 **1H Volume:** $${(volH1 / 1000).toFixed(1)}K`, // .toFixed(1) for better accuracy
         `---`,
         `**Safety:** ${safety} - *Not financial advice. DYOR.*`
       ].join("\n")
@@ -277,7 +296,7 @@ async function dropCall() {
     }
 
     if (!best) {
-      console.log("[SCAN] No candidate passed all filters and score checks.");
+      console.log("[SCAN] No candidate passed all filters and score checks. Required MC: 23K-80K, Vol: 3K-24K, H1: +10%.");
       return;
     }
 
@@ -315,7 +334,7 @@ async function dropCall() {
   }
 }
 
-// --- PNL / FLEX LOGIC (Auto-Reply Profit Reporting) ---
+// --- PNL / FLEX LOGIC ---
 async function flexGains() {
   try {
     for (const [addr, data] of Array.from(tracking.entries())) {
@@ -412,7 +431,7 @@ client.once("ready", async () => {
   setInterval(saveState, SAVE_INTERVAL_MS);
 });
 
-// --- ADMIN COMMANDS (All output is now embedded) ---
+// --- ADMIN COMMANDS ---
 client.on("messageCreate", async (msg) => {
   if (!msg.content || msg.channel.id !== CHANNEL_ID) return;
   const t = msg.content.toLowerCase().trim();
