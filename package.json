@@ -1,10 +1,14 @@
 {
-  "name": "1g-hunter",
+  "name": "1g-vault-caller",
   "version": "1.0.0",
-  "type": "module",
   "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js & node index.js"
+  },
   "dependencies": {
-    "discord.js": "^14.16.3",
-    "dotenv": "^16.4.5"
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
   }
 }
