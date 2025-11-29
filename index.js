@@ -1,5 +1,5 @@
 // =======================================================
-// 1G VAULT ULTIMATE MEME SNIPER (V3.0 - ALL FEATURES INTEGRATED)
+// 1G VAULT V5.1 - FINAL DEPLOYMENT
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
@@ -16,12 +16,10 @@ const {
 } = require("discord.js");
 
 // --- CONFIGURATION ---
+const BOT_NAME = "1G VAULT V5.1"; // Final bot name for all embeds and logs
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
-
-// Trading link for the "SNIPE NOW" button. Best for Solana memecoins.
 const REF = "https://jup.ag/"; 
-
 const CHAINS = { SOL: "solana", BASE: "base", BNB: "bsc", ETH: "ethereum" };
 
 // --- SCHEDULING ---
@@ -30,21 +28,20 @@ const MAX_DROP_INTERVAL_MS = Number(process.env.MAX_DROP_INTERVAL_MS) || 120_000
 const FLEX_INTERVAL_MS = Number(process.env.FLEX_INTERVAL_MS) || 90_000;
 const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
 
-// --- MEME FILTER SETTINGS (OPTIMIZED FOR HIGH MOMENTUM) ---
+// --- MEME FILTER SETTINGS (INSTANT DROP GUARANTEE) ---
 const MEME_SETTINGS = {
-  // Filters are generous to catch the hot tokens, but strict enough to avoid noise.
-  minMarketCap: Number(process.env.MC_MIN) || 500,       
-  maxMarketCap: Number(process.env.MC_MAX) || 3_000_000,
-  minLiquidityUsd: Number(process.env.LIQ_MIN) || 1000,  
+  minMarketCap: Number(process.env.MC_MIN) || 10,        
+  maxMarketCap: Number(process.env.MC_MAX) || 3_000_000, 
+  minLiquidityUsd: Number(process.env.LIQ_MIN) || 100,   
   minVolumeH1: Number(process.env.VOL_H1_MIN) || 500,     
-  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 3, 
-  minScore: Number(process.env.SCORE_MIN) || 15,         
-  flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 50, // Auto-report profit at 50% gain
+  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 0,  
+  minScore: Number(process.env.SCORE_MIN) || 0,          
+  flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, 
 };
 
-// --- EXTERNAL SOURCES (Enable/Disable via .env) ---
-const AXIOM_FEED_URL = process.env.AXIOM_FEED_URL || null; // Requires separate URL in .env
-const GMGN_FEED_URL = process.env.GMGN_FEED_URL || null;   // Requires separate URL in .env
+// --- EXTERNAL SOURCES ---
+const AXIOM_FEED_URL = process.env.AXIOM_FEED_URL || null;
+const GMGN_FEED_URL = process.env.GMGN_FEED_URL || null;
 const COINGECKO_MARKETS = process.env.ENABLE_COINGECKO === "1";
 
 if (!TOKEN || !CHANNEL_ID) {
@@ -58,7 +55,7 @@ const client = new Client({
 });
 
 let called = new Set();
-let tracking = new Map(); // addr -> { msgId, entryMC, symbol, reported, chain, ts, entryLiq }
+let tracking = new Map();
 
 // --- STATE MANAGEMENT ---
 function loadState() {
@@ -110,7 +107,6 @@ const retryFetch = async (url, retries = 2) => {
 
 // --- DATA SOURCES ---
 async function fetchDexPairs(chain) {
-  // Corrected to use the working search endpoint for trending/hot tokens (Fixing the 404 issue)
   const query = `trending`; 
   const url = `https://api.dexscreener.com/latest/dex/search?q=${query}`;
   const j = await retryFetch(url);
@@ -141,18 +137,16 @@ async function fetchExternalFeed(url, source) {
 
 // --- SCORING & FILTERING ---
 function scorePair(p) {
-  const mc = p.marketCap || p.fdv || 0;
   const liq = p.liquidity?.usd || 0;
   const vol = p.volume?.h1 || 0;
   const h1 = p.priceChange?.h1 || 0; 
   const m5 = p.priceChange?.m5 || 0; 
 
-  let s = 20; 
+  let s = 10; 
   s += Math.min(h1 * 2, 40); 
   s += Math.min(m5 * 1.5, 20); 
   if (liq > 20_000) s += 10;
-  else if (liq > 5_000) s += 5;
-  if (vol > 50_000) s += 10;
+  if (vol > 10_000) s += 10;
 
   return Math.min(99, Math.round(s));
 }
@@ -177,18 +171,13 @@ function passesMemeFilters(p) {
 async function collectCandidates() {
   const sources = [];
 
-  // 1. Dexscreener Chains (SOL, BASE, BNB, ETH)
   const dexPromises = Object.values(CHAINS).map(c => fetchDexPairs(c));
   const dexResults = await Promise.all(dexPromises);
   dexResults.forEach(arr => sources.push(...arr));
 
-  // 2. Axiom Feed (External Source)
   sources.push(...await fetchExternalFeed(AXIOM_FEED_URL, "axiom"));
-
-  // 3. GMGN Feed (External Source)
   sources.push(...await fetchExternalFeed(GMGN_FEED_URL, "gmgn"));
 
-  // 4. CoinGecko Markets (Broader Coverage)
   if (COINGECKO_MARKETS) {
     const cgUrl = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false`;
     const arr = await retryFetch(cgUrl);
@@ -206,7 +195,6 @@ async function collectCandidates() {
     }
   }
 
-  // Dedupe by address
   const map = new Map();
   for (const s of sources) {
     const addr = normalizeAddr(s.pairAddress || s.baseToken?.address || s.address || s.id);
@@ -218,7 +206,7 @@ async function collectCandidates() {
   return Array.from(map.values());
 }
 
-// --- ANNOUNCEMENT ---
+// --- ANNOUNCEMENT (Clean Discord Output) ---
 async function createCallEmbed(best) {
   const baseSym = best.baseToken?.symbol || "TOKEN";
   const liqUsd = best.liquidity?.usd || 0;
@@ -233,7 +221,7 @@ async function createCallEmbed(best) {
 
   const embed = new EmbedBuilder()
     .setColor(color)
-    .setTitle(`${statusEmoji} ${score}% PROBABILITY - 1G VAULT CALL: $${baseSym} ${statusEmoji}`)
+    .setTitle(`${statusEmoji} ${score}% PROBABILITY - ${BOT_NAME} CALL: $${baseSym} ${statusEmoji}`)
     .setDescription(
       [
         `**Source:** \`${chainName}\``,
@@ -248,7 +236,7 @@ async function createCallEmbed(best) {
       ].join("\n")
     )
     .setTimestamp()
-    .setFooter({ text: "1G Vault - Multi-Source Sniper" });
+    .setFooter({ text: `${BOT_NAME}` });
 
   const chartChain = best._sourceChain || best.chain || 'solana'; 
   const chartUrl = `https://dexscreener.com/${chartChain}/${best.addr}`;
@@ -323,7 +311,6 @@ async function flexGains() {
       if (!data || data.reported) continue;
       
       const chain = (data.chain === "BNB" ? "bsc" : data.chain?.toLowerCase?.()) || "solana"; 
-      // Fetching single pair data for live price
       const url = `https://api.dexscreener.com/latest/dex/pairs/${chain}/${addr}`;
       const j = await retryFetch(url);
       
@@ -335,10 +322,8 @@ async function flexGains() {
       const currentLiq = p.liquidity?.usd || 0;
       const gain = ((currentMC - (data.entryMC || 1)) / (data.entryMC || 1)) * 100;
       
-      // Check for the profit threshold (default 50%)
       if (gain < MEME_SETTINGS.flexGainMinPct) continue;
 
-      // Basic Anti-Rug check: Liquidity drop (if Liq drops > 70%)
       const isRug = (data.entryLiq > 5000 && currentLiq < data.entryLiq * 0.3); 
       if (isRug) {
         console.log(`[FLEX] Skipped flex (possible rug, Liq drop): ${addr}`);
@@ -356,7 +341,7 @@ async function flexGains() {
       // Format the flex message
       const fire = gain > 10000 ? "🔥 10000%" : gain > 1000 ? "⭐ 1000%" : gain > 500 ? "🚀 500%" : `${Math.round(gain)}%`;
       const pnl = gain.toFixed(1);
-      const profitText = `${fire} GAIN! $${data.symbol} UP ${pnl}% FROM 1G VAULT CALL!`;
+      const profitText = `${fire} GAIN! $${data.symbol} UP ${pnl}% FROM ${BOT_NAME} CALL!`;
 
       const flexEmbed = new EmbedBuilder()
         .setColor(0x00FF44) 
@@ -368,7 +353,6 @@ async function flexGains() {
         ].join("\n"))
         .setTimestamp();
 
-      // THIS SENDS THE REPLY TO THE ORIGINAL MESSAGE
       await orig.reply({ embeds: [flexEmbed] }).catch(() => null);
 
       data.reported = true;
@@ -377,10 +361,9 @@ async function flexGains() {
       console.log(`[FLEX] PnL REPORTED: ${addr} $${data.symbol}, ${pnl}%`);
     }
 
-    // Prune old tracking entries
     const now = Date.now();
     for (const [addr, data] of Array.from(tracking.entries())) {
-      const MAX_TRACKING_AGE_MIN = 60 * 24 * 7; // 7 days
+      const MAX_TRACKING_AGE_MIN = 60 * 24 * 7; 
       const ageMin = (now - (data.ts || now)) / 60000;
       if (ageMin > MAX_TRACKING_AGE_MIN) {
         tracking.delete(addr);
@@ -395,7 +378,7 @@ async function flexGains() {
 
 // --- SCHEDULER & DISCORD INIT ---
 client.once("ready", async () => {
-  console.log(`[BOT] 1G VAULT MULTI-SOURCE LIVE on ${client.user.tag} — ${new Date().toISOString()}`);
+  console.log(`[BOT] ${BOT_NAME} LIVE — ${new Date().toISOString()}`);
   loadState();
 
   await dropCall();
@@ -414,29 +397,45 @@ client.once("ready", async () => {
   };
   setTimeout(loop, MIN_DROP_INTERVAL_MS);
 
-  // Start PnL checks and state saving
   setInterval(flexGains, FLEX_INTERVAL_MS);
   setInterval(saveState, SAVE_INTERVAL_MS);
 });
 
-// --- ADMIN COMMANDS ---
+// --- ADMIN COMMANDS (All output is now embedded) ---
 client.on("messageCreate", async (msg) => {
   if (!msg.content || msg.channel.id !== CHANNEL_ID) return;
   const t = msg.content.toLowerCase().trim();
+  const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
+  if (!channel) return;
 
   if (t === "/start" || t === "/ping") {
-    await msg.reply("🚀 **1G VAULT IS ONLINE.** Ready to snipe high-volume memecoins.");
+    const embed = new EmbedBuilder()
+      .setColor(0x00FF00)
+      .setTitle(`🚀 ${BOT_NAME} IS ONLINE`)
+      .setDescription("Multi-Source Sniper is now active. Expect frequent memecoin calls.")
+      .setFooter({ text: `Status Check: ${BOT_NAME}` });
+    await msg.reply({ embeds: [embed] });
   }
 
   if (t === "/reset_called" || t === "/clear_called") {
     called.clear();
     saveState();
-    await msg.reply("✅ Called list cleared. Next scan will check all tokens.");
+    const embed = new EmbedBuilder()
+      .setColor(0xFF9900)
+      .setTitle(`✅ HISTORY CLEARED`)
+      .setDescription("Called list has been reset. Next scan will check all tokens.")
+      .setFooter({ text: BOT_NAME });
+    await msg.reply({ embeds: [embed] });
   }
 
   if (t === "/status" || t === "/state") {
-    const s = `called=${called.size} tracked=${tracking.size}`;
-    await msg.reply(`State: ${s}`);
+    const s = `Called: ${called.size}, Tracked: ${tracking.size}`;
+    const embed = new EmbedBuilder()
+      .setColor(0x0099FF)
+      .setTitle(`📊 ${BOT_NAME} STATS`)
+      .setDescription(s)
+      .setFooter({ text: BOT_NAME });
+    await msg.reply({ embeds: [embed] });
   }
 });
 
