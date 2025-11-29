@@ -147,5 +147,13 @@ client.once("ready", () => {
   setInterval(flexGains, 420000);
   setInterval(() => fetch("https://" + process.env.RENDER_EXTERNAL_HOSTNAME || "your-app.onrender.com"), 240000);
 });
-
+// /start & /ping command — instant alive check
+client.on("messageCreate", async (msg) => {
+  if (!msg.content) return;
+  const content = msg.content.toLowerCase().trim();
+  if (content === "/start" || content === "/ping") {
+    if (msg.channel.id !== CHANNEL_ID) return;
+    await msg.reply("**1G VAULT ULTIMATE CALLER IS LIVE & HUNTING**\nSOL • BASE • BNB\nNext call in 1–11 min");
+  }
+});
 client.login(TOKEN);
