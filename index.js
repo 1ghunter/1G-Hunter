@@ -1,8 +1,9 @@
 // =======================================================
-// 1G VAULT V15.2 - AGGRESSIVE MULTI-CALL (SOLANA ONLY)
-// CHANGE: Modified dropCall to announce ALL tokens that pass filters.
-// CHANGE: Throttle removed, relying on function finish time (MIN_DROP_INTERVAL_MS = 1000ms).
-// NEW: Added PUMPFUN_API_URL source for direct graduation tracking.
+// 1G VAULT V15.4 - TELEGRAM GROUP STRATEGY INTEGRATION
+// CHANGE: Added TG_FEED_URL, and implemented an auto-whitelist bypass
+// for all tokens coming from the 'telegram' source.
+// NOTE: You must set the TG_FEED_URL environment variable to your
+// Telegram monitoring API endpoint for this strategy to work.
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
@@ -19,45 +20,46 @@ const {
 } = require("discord.js");
 
 // --- CONFIGURATION ---
-const BOT_NAME = "1G VAULT V15.2 (Aggressive)"; 
+const BOT_NAME = "1G VAULT V15.4 (Telegram Feed Integration)"; 
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://jup.ag/"; 
-// !!! CRITICAL: ONLY SOLANA IS ENABLED !!!
 const CHAINS = { SOL: "solana" }; 
-// NEW: Referral Links & Feeds
+
+// --- EXTERNAL FEED LINKS ---
 const AXIOM_REF = "https://axiom.trade/@1gvault";
 // !!! CRITICAL: SET THESE ENVIRONMENT VARIABLES !!!
 const AXIOM_FEED_URL = process.env.AXIOM_FEED_URL || null;
 const PUMPFUN_API_URL = process.env.PUMPFUN_API_URL || null; 
 const GMGN_FEED_URL = process.env.GMGN_FEED_URL || null;
+// NEW: TELEGRAM FEED FOR USER'S PUMPFUN SIGNALS (SET TG_FEED_URL IN ENV)
+const TELEGRAM_FEED_URL = process.env.TG_FEED_URL || null; 
 
 // --- SCHEDULING ---
-// These are minimized for aggressive scanning
-const MIN_DROP_INTERVAL_MS = 1000; // Time to wait between full scan attempts
+const MIN_DROP_INTERVAL_MS = 1000; 
 const MAX_DROP_INTERVAL_MS = 1000;
 const FLEX_INTERVAL_MS = Number(process.env.FLEX_INTERVAL_MS) || 90_000;
 const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; 
-const CALL_HISTORY_CLEAR_MS = 3 * 60 * 60 * 1000; // Clear called list every 3 hours for re-scanning
+const CALL_HISTORY_CLEAR_MS = 3 * 60 * 60 * 1000; 
 
-// --- MEME FILTER SETTINGS (AGGRESSIVE TRANSACTION CHECK) ---
+// --- MEME FILTER SETTINGS (MODERATE AGGRESSIVE FALLBACK) ---
+// These filters are used for DexScreener/organic scans, but bypassed for the 'telegram' source.
 const MEME_SETTINGS = {
   minMarketCap: 0,        
   maxMarketCap: 999999999, 
-  minLiquidityUsd: Number(process.env.LIQ_MIN) || 2000,   
+  minLiquidityUsd: Number(process.env.LIQ_MIN) || 1000,   // $1K minimum
   minVolumeH1: 0,   
-  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 1, 
+  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 0, 
   minScore: 0, 
   flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, 
   
-  // AGGRESSIVE TRANSACTION FILTERS (H1)
-  minTxnsH1: Number(process.env.TXNS_H1_MIN) || 200,     
-  minBuysH1: Number(process.env.BUYS_H1_MIN) || 100,     
-  minSellsH1: Number(process.env.SELLS_H1_MIN) || 100,    
+  // Transaction filters 
+  minTxnsH1: Number(process.env.TXNS_H1_MIN) || 100,     
+  minBuysH1: Number(process.env.BUYS_H1_MIN) || 50,     
+  minSellsH1: Number(process.env.SELLS_H1_MIN) || 50,    
 };
 
-// --- EXTERNAL SOURCES (Unchanged) ---
 const COINGECKO_MARKETS = process.env.ENABLE_COINGECKO === "1";
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL || null;
 
@@ -121,7 +123,7 @@ const retryFetch = async (url, retries = 2) => {
     }
   }
   return null;
-};
+}};
 
 // --- DATA SOURCES ---
 async function fetchDexPairs(chain) {
@@ -167,7 +169,6 @@ async function fetchPumpGraduations(url) {
         const j = await retryFetch(url);
         if (!j) return [];
         
-        // Assumes the external API returns an array of graduated tokens/mints
         const tokens = Array.isArray(j) ? j : (Array.isArray(j.tokens) ? j.tokens : (Array.isArray(j.result) ? j.result : []));
 
         if (tokens.length === 0) {
@@ -177,7 +178,6 @@ async function fetchPumpGraduations(url) {
         
         console.log(`[PUMPFUN] Found ${tokens.length} graduated tokens.`);
 
-        // Create mock entries with high scores/liquidity to force a check in the next step
         return tokens.map(t => {
             const tokenAddress = t.mint_address || t.tokenAddress || t.mint || t.token_address; 
             if (!tokenAddress) return null;
@@ -185,8 +185,6 @@ async function fetchPumpGraduations(url) {
                 baseToken: { address: tokenAddress, symbol: t.symbol || 'PUMP' }, 
                 _source: "pumpfun",
                 _sourceChain: "solana",
-                // Set high mock values to ensure it passes aggressive filters 
-                // and the address is used to query actual DexScreener data later if needed.
                 priceChange: { h1: 1000 }, 
                 liquidity: { usd: 100000 },
                 txns: { h1: { buys: 500, sells: 500 } }
@@ -199,7 +197,36 @@ async function fetchPumpGraduations(url) {
     }
 }
 
+// --- CORE SCANNER LOGIC ---
+async function collectCandidates() {
+  const sources = [];
+
+  const dexPromises = Object.values(CHAINS).map(c => fetchDexPairs(c));
+  const dexResults = await Promise.all(dexPromises);
+  dexResults.forEach(arr => sources.push(...arr));
+
+  sources.push(...await fetchExternalFeed(AXIOM_FEED_URL, "axiom"));
+  sources.push(...await fetchExternalFeed(GMGN_FEED_URL, "gmgn"));
+  sources.push(...await fetchPumpGraduations(PUMPFUN_API_URL));
+  // NEW: Add the Telegram feed source
+  sources.push(...await fetchExternalFeed(TELEGRAM_FEED_URL, "telegram")); 
+
+  const map = new Map();
+  for (const s of sources) {
+    const addr = normalizeAddr(s.baseToken?.address || s.pairAddress || s.address || s.id);
+    if (!addr) continue;
+    
+    if (!map.has(addr) || (s.priceChange?.h1 || 0) > (map.get(addr).priceChange?.h1 || 0)) {
+        map.set(addr, s);
+    }
+  }
+  
+  console.log(`[SCAN] Found ${map.size} unique SOLANA candidates after deduplication from all sources.`);
+  return Array.from(map.values());
+}
+
 // --- SCORING & FILTERING ---
+
 function scorePair(p) {
   const liq = p.liquidity?.usd || 0;
   const h1 = p.priceChange?.h1 || 0; 
@@ -217,11 +244,23 @@ function scorePair(p) {
 
   if (liq > 5000) s += 5;
   if (liq > 10000) s += 5;
+  
+  // High score boost for whitelisted sources
+  if (p._source?.toLowerCase() === 'telegram' || p._source?.toLowerCase() === 'axiom') {
+      s += 20; 
+  }
 
   return Math.min(99, Math.round(s));
 }
 
 function passesMemeFilters(p) {
+  // NEW LOGIC: BYPASS filters if the token came from the specified Telegram feed
+  if (p._source?.toLowerCase() === 'telegram') {
+      console.log(`[PASS] Token $${p.baseToken?.symbol || 'UNKNOWN'} (Source: Telegram) is auto-whitelisted.`);
+      return true;
+  }
+  
+  // --- Standard Filter Check (Fallback for DexScreener/GMGN/Axiom) ---
   const liq = p.liquidity?.usd || 0;
   const h1 = p.priceChange?.h1 || 0;
   const buysH1 = p.txns?.h1?.buys || 0;
@@ -249,38 +288,7 @@ function passesMemeFilters(p) {
   return true;
 }
 
-// --- CORE SCANNER LOGIC ---
-async function collectCandidates() {
-  const sources = [];
-
-  // 1. DEX SCREENER: Broad search for new/trending tokens
-  const dexPromises = Object.values(CHAINS).map(c => fetchDexPairs(c));
-  const dexResults = await Promise.all(dexPromises);
-  dexResults.forEach(arr => sources.push(...arr));
-
-  // 2. EXTERNAL FEEDS: Axiom & other custom feeds
-  sources.push(...await fetchExternalFeed(AXIOM_FEED_URL, "axiom"));
-  sources.push(...await fetchExternalFeed(GMGN_FEED_URL, "gmgn"));
-
-  // 3. PUMPFUN GRADUATIONS: Direct API for high-signal events
-  sources.push(...await fetchPumpGraduations(PUMPFUN_API_URL));
-
-  const map = new Map();
-  for (const s of sources) {
-    const addr = normalizeAddr(s.baseToken?.address || s.pairAddress || s.address || s.id);
-    if (!addr) continue;
-    
-    // Deduplication: Prioritize the source with the higher 1H price change (Dexscreener data is usually best, but Pumpfun has mock high value)
-    if (!map.has(addr) || (s.priceChange?.h1 || 0) > (map.get(addr).priceChange?.h1 || 0)) {
-        map.set(addr, s);
-    }
-  }
-  
-  console.log(`[SCAN] Found ${map.size} unique SOLANA candidates after deduplication from all sources.`);
-  return Array.from(map.values());
-}
-
-// --- ANNOUNCEMENT (Clean Discord Output) ---
+// --- ANNOUNCEMENT ---
 async function createCallEmbed(best) {
   const baseSym = best.baseToken?.symbol || "TOKEN";
   const liqUsd = best.liquidity?.usd || 0;
@@ -291,13 +299,14 @@ async function createCallEmbed(best) {
   const sellsH1 = best.txns?.h1?.sells || 0;
 
   const chainName = (best._source || best._sourceChain || "SOLANA").toString().toUpperCase();
-  const color = score > 60 ? 0x00FF44 : score > 30 ? 0xFF9900 : 0xFF0000;
+  const color = best._source?.toLowerCase() === 'telegram' ? 0x9900FF : score > 60 ? 0x00FF44 : score > 30 ? 0xFF9900 : 0xFF0000;
   const safety = liqUsd > 10000 ? "✅ LOW RISK" : liqUsd > 2000 ? "⚠️ MODERATE RISK" : "🚨 HIGH RISK";
-  const statusEmoji = score > 60 ? "🔥" : "🚀";
+  const statusEmoji = best._source?.toLowerCase() === 'telegram' ? "⚡" : score > 60 ? "🔥" : "🚀";
+  const titlePrefix = best._source?.toLowerCase() === 'telegram' ? "⚡ TELEGRAM SNIPE" : "🚀 PROBABILITY";
 
   const embed = new EmbedBuilder()
     .setColor(color)
-    .setTitle(`${statusEmoji} ${score}% PROBABILITY - ${BOT_NAME} CALL: $${baseSym} ${statusEmoji}`)
+    .setTitle(`${statusEmoji} ${titlePrefix}: $${baseSym} ${statusEmoji} (${score}%)`)
     .setDescription(
       [
         `**Source:** \`${chainName}\``,
@@ -329,7 +338,7 @@ async function createCallEmbed(best) {
   return { embeds: [embed], components: [buttons] };
 }
 
-// --- MODIFIED dropCall TO ANNOUNCE ALL VALID CANDIDATES ---
+// --- CORE LOGIC ---
 async function dropCall() {
   try {
     const candidates = await collectCandidates();
@@ -337,7 +346,6 @@ async function dropCall() {
 
     const validCalls = [];
 
-    // 1. Identify all tokens that pass the aggressive filters
     for (const p of candidates) {
       const addr = normalizeAddr(p.baseToken?.address || p.pairAddress || p.address || p.id);
       if (!addr) continue;
@@ -354,6 +362,7 @@ async function dropCall() {
       return;
     }
 
+    // Prioritize by score, ensuring auto-whitelisted tokens (like Telegram) get called first
     validCalls.sort((a, b) => b.score - a.score);
 
     console.log(`[ANNOUNCE] Found ${validCalls.length} high-potential tokens to announce.`);
@@ -364,14 +373,12 @@ async function dropCall() {
         return;
     }
 
-    // 2. Announce all valid tokens one by one (Discord handles rate limits)
     let announcements = 0;
     for (const best of validCalls) {
-        called.add(best.addr); // Mark as called
+        called.add(best.addr); 
         const messagePayload = await createCallEmbed(best);
 
         const msg = await channel.send(messagePayload).catch((e) => {
-            // Stop sending if Discord rate limit is hit (429 error)
             console.warn(`[DISCORD] Error sending $${best.baseToken?.symbol}:`, e.message);
             return null; 
         });
@@ -396,7 +403,6 @@ async function dropCall() {
             });
         }
         
-        // Minor throttle to reduce immediate burst impact
         await sleep(500); 
     }
 
@@ -530,7 +536,6 @@ client.once("ready", async () => {
 
   const loop = async () => {
     try {
-      // Aggressive reset of the 'called' set to re-scan old tokens frequently
       if (Date.now() - lastCallReset > CALL_HISTORY_CLEAR_MS) {
           console.log(`[RESET] Clearing called list (${called.size} entries) to re-scan for potential.`)
           called.clear();
@@ -542,7 +547,6 @@ client.once("ready", async () => {
     } catch (e) {
       console.warn("Loop dropCall err:", e?.message || e);
     } finally {
-      // Wait minimum time before the next fetch loop to respect API limits
       const delay = MIN_DROP_INTERVAL_MS;
       setTimeout(loop, delay);
     }
@@ -564,7 +568,7 @@ client.on("messageCreate", async (msg) => {
     const embed = new EmbedBuilder()
       .setColor(0x00FF00)
       .setTitle(`🚀 ${BOT_NAME} IS ONLINE`)
-      .setDescription("Solana Sniper is now in **Aggressive** mode. Expect max-frequency calls.")
+      .setDescription("Solana Sniper is now in **Telegram Integration Mode**.")
       .setFooter({ text: `Status Check: ${BOT_NAME}` });
     await msg.reply({ embeds: [embed] });
   }
@@ -586,7 +590,7 @@ client.on("messageCreate", async (msg) => {
     const s = `Called: ${called.size}, Tracked: ${tracking.size}`;
     const embed = new EmbedBuilder()
       .setColor(0x0099FF)
-      .setTitle(`📊 ${BOT_NAME} STATS (Solana Only - AGGRESSIVE)`)
+      .setTitle(`📊 ${BOT_NAME} STATS (Solana Only - TELEGRAM MODE)`)
       .setDescription(s)
       .setFooter({ text: BOT_NAME });
     await msg.reply({ embeds: [embed] });
