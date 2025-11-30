@@ -1,13 +1,14 @@
 // =======================================================
-// 1G VAULT V15.6 - PROFESSIONAL STABILITY FIX (NODE-FETCH)
-// CHANGE: Enforced use of node-fetch (requires 'node-fetch' in package.json)
-//         to guarantee network compatibility across Node.js versions.
-//         Added explicit checks for critical environment variables.
+// 1G VAULT V15.8 - PURE DEXSCREENER SNIPER (STABLE)
+// CHANGE: Removed all external feed dependencies (Telegram, Axiom, etc.).
+//         Restored aggressive filtering to manage DexScreener's large
+//         list of 'new' pairs and ensure only active tokens are called.
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
-const fetch = require('node-fetch'); // CRITICAL: Requires 'node-fetch' installed (npm install node-fetch@2)
+// Ensure 'node-fetch' is installed in your package.json for this to work
+const fetch = require('node-fetch'); 
 const stateFile = path.resolve(__dirname, "state.json");
 
 const {
@@ -20,50 +21,45 @@ const {
 } = require("discord.js");
 
 // --- CONFIGURATION ---
-const BOT_NAME = "1G VAULT V15.6 (Professional Stable)"; 
+const BOT_NAME = "1G VAULT V15.8 (DEXSniper)"; 
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://jup.ag/"; 
+// !!! CRITICAL: ONLY SOLANA IS ENABLED !!!
 const CHAINS = { SOL: "solana" }; 
-
-// --- EXTERNAL FEED LINKS ---
-const AXIOM_REF = "https://axiom.trade/@1gvault";
-const AXIOM_FEED_URL = process.env.AXIOM_FEED_URL || null;
-const PUMPFUN_API_URL = process.env.PUMPFUN_API_URL || null; 
-const GMGN_FEED_URL = process.env.GMGN_FEED_URL || null;
-const TELEGRAM_FEED_URL = process.env.TG_FEED_URL || null; 
+const AXIOM_REF = "https://axiom.trade/@1gvault"; // Still keep referral link in embed
 
 // --- SCHEDULING ---
-const MIN_DROP_INTERVAL_MS = 1000; 
+const MIN_DROP_INTERVAL_MS = Number(process.env.MIN_DROP_INTERVAL_MS) || 15_000; // Increased stability
 const FLEX_INTERVAL_MS = Number(process.env.FLEX_INTERVAL_MS) || 90_000;
 const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; 
-const CALL_HISTORY_CLEAR_MS = 3 * 60 * 60 * 1000; 
+const CALL_HISTORY_CLEAR_MS = 3 * 60 * 60 * 1000; // Reset 'called' list every 3 hours
 
-// --- FILTER SETTINGS (Minimal) ---
+// --- MEME FILTER SETTINGS (AGGRESSIVE TRANSACTION CHECK RESTORED) ---
 const MEME_SETTINGS = {
-  minLiquidityUsd: 1,      // Minimal check to avoid complete junk tokens
+  // REQUIRE these minimums to pass the filter (CRITICAL for pure DexScreener)
+  minLiquidityUsd: Number(process.env.LIQ_MIN) || 2000,   
+  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 1, 
   flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, 
   
-  // These are only used for SCORING, not filtering in V15.5/V15.6
-  minTxnsH1: Number(process.env.TXNS_H1_MIN) || 100,     
-  minBuysH1: Number(process.env.BUYS_H1_MIN) || 50,     
-  minSellsH1: Number(process.env.SELLS_H1_MIN) || 50,    
+  // AGGRESSIVE TRANSACTION FILTERS (Used for filter AND score)
+  minTxnsH1: Number(process.env.TXNS_H1_MIN) || 200,     
+  minBuysH1: Number(process.env.BUYS_H1_MIN) || 100,     
+  minSellsH1: Number(process.env.SELLS_H1_MIN) || 100,    
 };
 
+// --- EXTERNAL SOURCES (CLEANED UP) ---
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL || null;
 
 // --- CRITICAL ENVIRONMENT CHECKS ---
 if (!TOKEN || TOKEN.length < 50) {
-  console.error("❌ CRITICAL ERROR: DISCORD_TOKEN is missing or invalid. Check your environment variables.");
+  console.error("❌ CRITICAL ERROR: DISCORD_TOKEN is missing or invalid.");
   process.exit(1);
 }
 if (!CHANNEL_ID || CHANNEL_ID.length < 15) {
-  console.error("❌ CRITICAL ERROR: CHANNEL_ID is missing or invalid. Check your environment variables.");
+  console.error("❌ CRITICAL ERROR: CHANNEL_ID is missing or invalid.");
   process.exit(1);
-}
-if (!TELEGRAM_FEED_URL) {
-    console.warn("⚠️ WARNING: TG_FEED_URL is not set. Telegram auto-snipe feature is disabled. Only Axiom/GMGN/DexScreener feeds will be used.");
 }
 
 // =======================================================
@@ -76,7 +72,7 @@ let called = new Set();
 let tracking = new Map();
 let lastCallReset = Date.now(); 
 
-// --- STATE MANAGEMENT ---
+// --- STATE MANAGEMENT (UNCHANGED) ---
 function loadState() {
   try {
     if (fs.existsSync(stateFile)) {
@@ -112,7 +108,6 @@ const normalizeAddr = (a) => (a || "").toLowerCase();
 async function retryFetch(url, retries = 2) {
   for (let i = 0; i <= retries; i++) {
     try {
-      // Use the imported 'fetch' which is now guaranteed to be node-fetch
       const res = await fetch(url);
       if (!res.ok) {
         throw new Error(`HTTP Error Status: ${res.status}`);
@@ -129,106 +124,49 @@ async function retryFetch(url, retries = 2) {
   return null;
 }
 
-// --- DATA SOURCES (UNCHANGED LOGIC) ---
+// --- DATA SOURCES (PURE DEXSCREENER) ---
 async function fetchDexPairs(chain) {
   const query = `new`; 
   const url = `https://api.dexscreener.com/latest/dex/search?q=${query}`;
   const j = await retryFetch(url);
   
   const pairs = j?.pairs || [];
+  // Filter for the specified chain (Solana)
   const filteredPairs = pairs.filter(p => p.chainId?.toLowerCase() === chain.toLowerCase());
   
   if (filteredPairs.length === 0) {
      console.log(`[DEX] Chain ${chain}: Found 0 pairs (from ${pairs.length} total active).`);
   } else {
-     console.log(`[DEX] Chain ${chain}: Found ${filteredPairs.length} candidates.`);
+     console.log(`[DEX] Chain ${chain}: Found ${filteredPairs.length} new candidates.`);
   }
 
   return filteredPairs.map(p => ({ ...p, _sourceChain: chain }));
 }
 
-async function fetchExternalFeed(url, source) {
-  if (!url) return [];
-  try {
-    const j = await retryFetch(url);
-    if (!j) return [];
-    
-    const pairs = Array.isArray(j) ? j : (Array.isArray(j.pairs) ? j.pairs : []);
-    if (pairs.length === 0 && j) {
-      console.warn(`[API FAIL] ${source}: Unexpected response format or empty list.`); 
-    }
-    
-    return pairs.filter(p => {
-        const chain = p.chainId || p.chain;
-        return !chain || chain.toLowerCase() === 'solana';
-    }).map(p => ({ ...p, _source: source }));
-  } catch {
-    return [];
-  }
-}
-
-async function fetchPumpGraduations(url) {
-    if (!url) return [];
-    try {
-        const j = await retryFetch(url);
-        if (!j) return [];
-        
-        const tokens = Array.isArray(j) ? j : (Array.isArray(j.tokens) ? j.tokens : (Array.isArray(j.result) ? j.result : []));
-
-        if (tokens.length === 0) {
-            console.log("[PUMPFUN] Found 0 graduated tokens.");
-            return [];
-        }
-        
-        console.log(`[PUMPFUN] Found ${tokens.length} graduated tokens.`);
-
-        return tokens.map(t => {
-            const tokenAddress = t.mint_address || t.tokenAddress || t.mint || t.token_address; 
-            if (!tokenAddress) return null;
-            return { 
-                baseToken: { address: tokenAddress, symbol: t.symbol || 'PUMP' }, 
-                _source: "pumpfun",
-                _sourceChain: "solana",
-                priceChange: { h1: 1000 }, 
-                liquidity: { usd: 100000 },
-                txns: { h1: { buys: 500, sells: 500 } }
-            };
-        }).filter(t => t !== null);
-
-    } catch (err) {
-        console.warn("[PUMPFUN] Fetch error:", err?.message || err);
-        return [];
-    }
-}
-
 async function collectCandidates() {
   const sources = [];
 
+  // Fetch only from DexScreener's 'new' endpoint for all configured chains
   const dexPromises = Object.values(CHAINS).map(c => fetchDexPairs(c));
   const dexResults = await Promise.all(dexPromises);
   dexResults.forEach(arr => sources.push(...arr));
-
-  sources.push(...await fetchExternalFeed(AXIOM_FEED_URL, "axiom"));
-  sources.push(...await fetchExternalFeed(GMGN_FEED_URL, "gmgn"));
-  sources.push(...await fetchPumpGraduations(PUMPFUN_API_URL));
-  sources.push(...await fetchExternalFeed(TELEGRAM_FEED_URL, "telegram")); 
 
   const map = new Map();
   for (const s of sources) {
     const addr = normalizeAddr(s.baseToken?.address || s.pairAddress || s.address || s.id);
     if (!addr) continue;
     
+    // Deduplicate: take the pair with the highest 1H change if multiple DexScreener pairs exist
     if (!map.has(addr) || (s.priceChange?.h1 || 0) > (map.get(addr).priceChange?.h1 || 0)) {
         map.set(addr, s);
     }
   }
   
-  console.log(`[SCAN] Found ${map.size} unique SOLANA candidates after deduplication from all sources.`);
+  console.log(`[SCAN] Found ${map.size} unique SOLANA candidates after deduplication.`);
   return Array.from(map.values());
 }
 
-// --- SCORING & FILTERING (MINIMAL/TELEGRAM FOCUS) ---
-
+// --- SCORING & FILTERING (AGGRESSIVE FILTERING RESTORED) ---
 function scorePair(p) {
   const liq = p.liquidity?.usd || 0;
   const h1 = p.priceChange?.h1 || 0; 
@@ -237,53 +175,54 @@ function scorePair(p) {
   const sellsH1 = p.txns?.h1?.sells || 0;
 
   let s = 10; 
+  // Base score on momentum
   s += Math.min(h1 * 5, 50); 
   s += Math.min(m5 * 3, 20); 
   
-  // High score boost if traditional metrics are met (for DexScreeners)
+  // Score boost for high transaction counts (aggressive check)
   if (buysH1 >= MEME_SETTINGS.minBuysH1 && sellsH1 >= MEME_SETTINGS.minSellsH1) {
       s += 10;
   }
 
+  // Score boost for liquidity
   if (liq > 5000) s += 5;
   if (liq > 10000) s += 5;
-  
-  // CRITICAL: High score boost for whitelisted sources (Telegram/Axiom)
-  if (p._source?.toLowerCase() === 'telegram' || p._source?.toLowerCase() === 'axiom') {
-      s += 20; 
-  }
 
   return Math.min(99, Math.round(s));
 }
 
 function passesMemeFilters(p) {
-  // TELEGRAM BYPASS: Auto-whitelist any token from the Telegram feed
-  if (p._source?.toLowerCase() === 'telegram') {
-      console.log(`[PASS] Token $${p.baseToken?.symbol || 'UNKNOWN'} (Source: Telegram) is auto-whitelisted.`);
-      return true;
-  }
-  
-  // --- STANDARD FILTER CHECK (MINIMAL) ---
   const liq = p.liquidity?.usd || 0;
-  
-  // Require a minimum liquidity to avoid completely fake tokens.
+  const h1 = p.priceChange?.h1 || 0;
+  const buysH1 = p.txns?.h1?.buys || 0;
+  const sellsH1 = p.txns?.h1?.sells || 0;
+  const totalTxnsH1 = buysH1 + sellsH1 || 0;
+
+  // 1. LIQUIDITY MINIMUM
   if (liq < MEME_SETTINGS.minLiquidityUsd) { 
       return false; 
   }
-
-  // If the source is DexScreener, check for minimal life.
-  if (p._sourceChain === 'solana') {
-    const totalTxnsH1 = p.txns?.h1?.buys + p.txns?.h1?.sells || 0;
-    // Require at least 2 total transactions in the last hour.
-    if (totalTxnsH1 < 2) {
-      return false;
-    }
+  
+  // 2. 1H PRICE CHANGE MINIMUM
+  if (h1 < MEME_SETTINGS.minPriceChangeH1) { 
+      return false; 
   }
 
+  // 3. AGGRESSIVE TRANSACTION COUNTS MINIMUMS
+  if (totalTxnsH1 < MEME_SETTINGS.minTxnsH1) {
+      return false;
+  }
+  if (buysH1 < MEME_SETTINGS.minBuysH1) { 
+      return false; 
+  }
+  if (sellsH1 < MEME_SETTINGS.minSellsH1) { 
+      return false; 
+  }
+  
   return true;
 }
 
-// --- ANNOUNCEMENT (UNCHANGED LOGIC) ---
+// --- ANNOUNCEMENT ---
 async function createCallEmbed(best) {
   const baseSym = best.baseToken?.symbol || "TOKEN";
   const liqUsd = best.liquidity?.usd || 0;
@@ -293,18 +232,17 @@ async function createCallEmbed(best) {
   const buysH1 = best.txns?.h1?.buys || 0;
   const sellsH1 = best.txns?.h1?.sells || 0;
 
-  const chainName = (best._source || best._sourceChain || "SOLANA").toString().toUpperCase();
-  const color = best._source?.toLowerCase() === 'telegram' ? 0x9900FF : score > 60 ? 0x00FF44 : score > 30 ? 0xFF9900 : 0xFF0000;
+  const chainName = (best._sourceChain || "SOLANA").toString().toUpperCase();
+  const color = score > 60 ? 0x00FF44 : score > 30 ? 0xFF9900 : 0xFF0000;
   const safety = liqUsd > 10000 ? "✅ LOW RISK" : liqUsd > 2000 ? "⚠️ MODERATE RISK" : "🚨 HIGH RISK";
-  const statusEmoji = best._source?.toLowerCase() === 'telegram' ? "⚡" : score > 60 ? "🔥" : "🚀";
-  const titlePrefix = best._source?.toLowerCase() === 'telegram' ? "⚡ TELEGRAM SNIPE" : "🚀 PROBABILITY";
+  const statusEmoji = score > 60 ? "🔥" : "🚀";
 
   const embed = new EmbedBuilder()
     .setColor(color)
-    .setTitle(`${statusEmoji} ${titlePrefix}: $${baseSym} ${statusEmoji} (${score}%)`)
+    .setTitle(`${statusEmoji} ${score}% PROBABILITY - ${BOT_NAME} CALL: $${baseSym} ${statusEmoji}`)
     .setDescription(
       [
-        `**Source:** \`${chainName}\``,
+        `**Source:** \`${chainName} (DexScreener New)\``,
         `**CA:** \`${best.baseToken?.address || best.pairAddress || "unknown"}\``,
         `---`,
         `💰 **Mkt Cap:** $${(mc / 1000).toFixed(1)}K`,
@@ -333,34 +271,48 @@ async function createCallEmbed(best) {
   return { embeds: [embed], components: [buttons] };
 }
 
-// --- CORE LOGIC (UNCHANGED LOGIC) ---
 async function dropCall() {
   try {
     const candidates = await collectCandidates();
     if (!candidates || candidates.length === 0) return;
 
     const validCalls = [];
-
     for (const p of candidates) {
       const addr = normalizeAddr(p.baseToken?.address || p.pairAddress || p.address || p.id);
       if (!addr) continue;
+      
+      // CRITICAL: Clear cache if token is very old (over 3 hours since last reset)
+      const now = Date.now();
+      if (now - lastCallReset > CALL_HISTORY_CLEAR_MS) {
+          console.log(`[RESET] Clearing called list (${called.size} entries) to re-scan for potential.`)
+          called.clear();
+          lastCallReset = now;
+      }
+
       if (called.has(addr)) continue;
 
-      if (!passesMemeFilters(p)) continue;
+      if (!passesMemeFilters(p)) {
+          // Log discarded tokens only if they are close to the minimums
+          if((p.liquidity?.usd || 0) > 100) { 
+              // console.log(`[FILTER] Token $${p.baseToken?.symbol || 'Unknown'} discarded: Did not pass aggressive filters.`);
+          }
+          continue;
+      }
 
       const score = scorePair(p);
+      if (score < 30) continue; // Minimum score threshold required for a call
+
       validCalls.push({ ...p, score, addr });
     }
-    
+
     if (validCalls.length === 0) {
-      console.log("[SCAN] No new candidates passed the aggressive filters.");
+      console.log("[SCAN] No new candidates passed the aggressive filters (Liq/Txns/H1%).");
       return;
     }
 
+    // Prioritize by highest score
     validCalls.sort((a, b) => b.score - a.score);
 
-    console.log(`[ANNOUNCE] Found ${validCalls.length} high-potential tokens to announce.`);
-    
     const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
     if (!channel || !channel.send) {
         console.warn("[DISCORD] Failed to find channel or send messages. Check CHANNEL_ID/Permissions.");
@@ -368,7 +320,8 @@ async function dropCall() {
     }
 
     let announcements = 0;
-    for (const best of validCalls) {
+    // Announce top 3 to prevent rate limiting in single cycle
+    for (const best of validCalls.slice(0, 3)) { 
         called.add(best.addr); 
         const messagePayload = await createCallEmbed(best);
 
@@ -392,12 +345,12 @@ async function dropCall() {
               entryLiq: best.liquidity?.usd || 0,
               symbol: best.baseToken?.symbol,
               reported: false,
-              chain: best._sourceChain || best.chain || best._source || "solana",
+              chain: best._sourceChain || "solana",
               ts: Date.now(),
             });
         }
         
-        await sleep(500); 
+        await sleep(500); // Small pause to avoid hitting Discord rate limits on rapid sends
     }
 
     saveState();
@@ -407,7 +360,7 @@ async function dropCall() {
   }
 }
 
-// --- PNL / FLEX LOGIC (UNCHANGED LOGIC) ---
+// --- PNL / FLEX LOGIC (UNCHANGED) ---
 async function flexGains() {
   try {
     for (const [addr, data] of Array.from(tracking.entries())) {
@@ -504,7 +457,7 @@ async function postFlexReply(data, currentMC, currentLiq, gain) {
   await orig.reply({ embeds: [flexEmbed] }).catch(() => null);
 }
 
-// --- SELF-PINGING LOGIC (UNCHANGED LOGIC) ---
+// --- SELF-PINGING LOGIC (UNCHANGED) ---
 function startHealthCheck() {
     if (!SELF_URL) {
         console.warn("[HEALTH] SELF_URL environment variable is not set. Bot may go idle.");
@@ -513,7 +466,6 @@ function startHealthCheck() {
     console.log(`[HEALTH] Starting self-ping to ${SELF_URL} every ${HEALTH_CHECK_INTERVAL_MS / 60000} minutes.`);
     setInterval(async () => {
         try {
-            // Use the explicit fetch function
             await fetch(SELF_URL);
         } catch (e) {
             console.warn("[HEALTH] Self-ping failed:", e.message);
@@ -531,18 +483,11 @@ client.once("ready", async () => {
 
   const loop = async () => {
     try {
-      if (Date.now() - lastCallReset > CALL_HISTORY_CLEAR_MS) {
-          console.log(`[RESET] Clearing called list (${called.size} entries) to re-scan for potential.`)
-          called.clear();
-          lastCallReset = Date.now();
-          saveState();
-      }
-      
       await dropCall();
     } catch (e) {
       console.warn("Loop dropCall err:", e?.message || e);
     } finally {
-      const delay = MIN_DROP_INTERVAL_MS;
+      const delay = MIN_DROP_INTERVAL_MS; // Use minimal delay for high-frequency scanning
       setTimeout(loop, delay);
     }
   };
@@ -552,7 +497,7 @@ client.once("ready", async () => {
   setInterval(saveState, SAVE_INTERVAL_MS);
 });
 
-// --- ADMIN COMMANDS (UNCHANGED LOGIC) ---
+// --- ADMIN COMMANDS (UPDATED BOT NAME) ---
 client.on("messageCreate", async (msg) => {
   if (!msg.content || msg.channel.id !== CHANNEL_ID) return;
   const t = msg.content.toLowerCase().trim();
@@ -563,7 +508,7 @@ client.on("messageCreate", async (msg) => {
     const embed = new EmbedBuilder()
       .setColor(0x00FF00)
       .setTitle(`🚀 ${BOT_NAME} IS ONLINE`)
-      .setDescription("Solana Sniper is now in **Minimal Filter/Telegram Integration Mode**.")
+      .setDescription("Solana Sniper is running in **Pure DexScreener Sniper Mode**.")
       .setFooter({ text: `Status Check: ${BOT_NAME}` });
     await msg.reply({ embeds: [embed] });
   }
@@ -585,7 +530,7 @@ client.on("messageCreate", async (msg) => {
     const s = `Called: ${called.size}, Tracked: ${tracking.size}`;
     const embed = new EmbedBuilder()
       .setColor(0x0099FF)
-      .setTitle(`📊 ${BOT_NAME} STATS (Solana Only - TELEGRAM MODE)`)
+      .setTitle(`📊 ${BOT_NAME} STATS (DexScreener Only)`)
       .setDescription(s)
       .setFooter({ text: BOT_NAME });
     await msg.reply({ embeds: [embed] });
@@ -593,8 +538,6 @@ client.on("messageCreate", async (msg) => {
 });
 
 client.login(TOKEN).catch((e) => {
-  // CRITICAL: Log a more informative message on login failure
   console.error("❌ DISCORD LOGIN FAILED:", e?.message || e);
-  console.error("Please verify your DISCORD_TOKEN is correct and the bot has all required Intents enabled in the Developer Portal.");
   process.exit(1);
 });
