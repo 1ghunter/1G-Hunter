@@ -1,6 +1,6 @@
 // =======================================================
-// 1G VAULT V8.0 - GUARANTEED QUALITY DROP (SOLANA ONLY)
-// Optimized for: MC $25K-$75K | Min Volume $2K | Min Momentum +5%
+// 1G VAULT V11.0 - AGGRESSIVE MOMENTUM HUNTER (SOLANA ONLY)
+// Optimized for: Max Momentum | Min Liquidity $2K | Min H1 +1%
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
@@ -25,25 +25,26 @@ const REF = "https://jup.ag/";
 const CHAINS = { SOL: "solana" }; 
 
 // --- SCHEDULING ---
-const MIN_DROP_INTERVAL_MS = Number(process.env.MIN_DROP_INTERVAL_MS) || 60_000;
-const MAX_DROP_INTERVAL_MS = Number(process.env.MAX_DROP_INTERVAL_MS) || 120_000;
+const MIN_DROP_INTERVAL_MS = Number(process.env.MIN_DROP_INTERVAL_MS) || 45_000; // INCREASED SCAN FREQUENCY
+const MAX_DROP_INTERVAL_MS = Number(process.env.MAX_DROP_INTERVAL_MS) || 75_000;
 const FLEX_INTERVAL_MS = Number(process.env.FLEX_INTERVAL_MS) || 90_000;
 const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
 
-// --- MEME FILTER SETTINGS (OPTIMIZED FOR HIGH-SUCCESS DROPS) ---
+// --- MEME FILTER SETTINGS (MINIMALIST) ---
 const MEME_SETTINGS = {
-  // TIGHT MARKET CAP FOR NEWLY GRADUATED COINS (25K - 75K)
-  minMarketCap: Number(process.env.MC_MIN) || 25000,        
-  maxMarketCap: Number(process.env.MC_MAX) || 75000, 
+  // MARKET CAP FILTERS DISABLED
+  minMarketCap: 0,        
+  maxMarketCap: 999999999, 
   
-  // MINIMUM VOLUME AND LIQUIDITY
+  // MINIMUM LIQUIDITY FOR SAFETY
   minLiquidityUsd: Number(process.env.LIQ_MIN) || 2000,   
-  minVolumeH1: Number(process.env.VOL_H1_MIN) || 2000,   // LOWERED MIN VOLUME
-  // maxVolumeH1 REMOVED to allow high-volume, pre-80K MC pumps
   
-  // MINIMUM MOMENTUM (RELAXED TO +5% FOR SUCCESS)
-  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 5, 
-  minScore: Number(process.env.SCORE_MIN) || 30,          // LOWERED MIN SCORE to ensure announcement
+  // MINIMUM VOLUME DISABLED
+  minVolumeH1: 0,   
+  
+  // MINIMUM MOMENTUM (BARE MINIMUM ACTIVITY)
+  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 1, // +1% H1
+  minScore: 0, 
   flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, 
 };
 
@@ -113,17 +114,19 @@ const retryFetch = async (url, retries = 2) => {
   return null;
 };
 
-// --- DATA SOURCES ---
+// --- DATA SOURCES (NEW AGGRESSIVE SCANNING) ---
 async function fetchDexPairs(chain) {
-  const query = `trending`; 
+  // Use a broad search query to get a large set of active pairs on Solana
+  const query = `new`; 
   const url = `https://api.dexscreener.com/latest/dex/search?q=${query}`;
   const j = await retryFetch(url);
   
   const pairs = j?.pairs || [];
+  // Filter only for the desired chain (Solana)
   const filteredPairs = pairs.filter(p => p.chainId?.toLowerCase() === chain.toLowerCase());
   
   if (filteredPairs.length === 0) {
-     console.log(`[DEX] Chain ${chain}: Found 0 pairs (from ${pairs.length} total trending).`);
+     console.log(`[DEX] Chain ${chain}: Found 0 pairs (from ${pairs.length} total active).`);
   } else {
      console.log(`[DEX] Chain ${chain}: Found ${filteredPairs.length} candidates.`);
   }
@@ -151,53 +154,32 @@ async function fetchExternalFeed(url, source) {
 // --- SCORING & FILTERING ---
 function scorePair(p) {
   const liq = p.liquidity?.usd || 0;
-  const vol = p.volume?.h1 || 0;
   const h1 = p.priceChange?.h1 || 0; 
   const m5 = p.priceChange?.m5 || 0; 
 
-  // Score adjusted to better reflect looser filters while prioritizing momentum
+  // Score heavily weighted toward H1 momentum and then M5
   let s = 10; 
-  s += Math.min(h1 * 4, 50); // Increased H1 weight
-  s += Math.min(m5 * 2, 20); 
-  if (liq > 5000) s += 10;
-  if (vol > 5000) s += 10;
+  s += Math.min(h1 * 5, 50); // Aggressive H1 weighting (50 max)
+  s += Math.min(m5 * 3, 20); // M5 weighting (20 max)
   
-  if (p._source === 'axiom' || p._source === 'gmgn') {
-      s += 10; 
-  }
+  // Bonus for liquidity for safety
+  if (liq > 5000) s += 5;
+  if (liq > 10000) s += 5;
 
   return Math.min(99, Math.round(s));
 }
 
 function passesMemeFilters(p) {
-  const mc = p.marketCap || p.fdv || 0;
   const liq = p.liquidity?.usd || 0;
-  const vol = p.volume?.h1 || 0;
   const h1 = p.priceChange?.h1 || 0;
-  const score = scorePair(p);
-  
-  // MARKET CAP CHECK (25K - 75K)
-  if (mc < MEME_SETTINGS.minMarketCap || mc > MEME_SETTINGS.maxMarketCap) { 
-      return false; 
-  }
-  
-  // LIQUIDITY CHECK
+
+  // 1. MIN LIQUIDITY CHECK (Min $2K for safety)
   if (liq < MEME_SETTINGS.minLiquidityUsd) { 
       return false; 
   }
   
-  // MIN VOLUME CHECK (Min 2K)
-  if (vol < MEME_SETTINGS.minVolumeH1) { 
-      return false; 
-  }
-  
-  // MOMENTUM CHECK (+5% H1)
+  // 2. MIN MOMENTUM CHECK (+1% H1)
   if (h1 < MEME_SETTINGS.minPriceChangeH1) { 
-      return false; 
-  }
-  
-  // SCORE CHECK
-  if (score < MEME_SETTINGS.minScore) { 
       return false; 
   }
   
@@ -216,23 +198,6 @@ async function collectCandidates() {
   // Fetch external feeds (filtered to Solana in fetchExternalFeed)
   sources.push(...await fetchExternalFeed(AXIOM_FEED_URL, "axiom"));
   sources.push(...await fetchExternalFeed(GMGN_FEED_URL, "gmgn"));
-
-  if (COINGECKO_MARKETS) {
-    const cgUrl = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false`;
-    const arr = await retryFetch(cgUrl);
-    if (Array.isArray(arr)) {
-        const cgPairs = arr.map(c => ({
-            baseToken: { symbol: c.symbol?.toUpperCase() || c.id, address: c.contract_address || c.id },
-            marketCap: c.market_cap || 0,
-            liquidity: { usd: (c.total_volume || 0) / 5 }, 
-            volume: { h1: c.total_volume || 0 },
-            priceChange: { h1: (c.price_change_percentage_24h || 0) / 24 }, 
-            pairAddress: c.contract_address || c.id,
-            _source: "coingecko",
-        }));
-        sources.push(...cgPairs);
-    }
-  }
 
   const map = new Map();
   for (const s of sources) {
@@ -305,7 +270,7 @@ async function dropCall() {
     }
 
     if (!best) {
-      console.log("[SCAN] No candidate passed all filters and score checks. Required MC: 25K-75K, Min Vol: 2K, Min H1: +5%.");
+      console.log("[SCAN] No candidate passed the minimum filters. Required Min Liq: 2K, Min H1: +1%.");
       return;
     }
 
