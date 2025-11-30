@@ -1,6 +1,6 @@
 // =======================================================
-// 1G VAULT V7.0 - PURE SOLANA FOCUS
-// Targets: Solana only. MC $23K-$80K | Volume $3K-$24K | Momentum +10%
+// 1G VAULT V8.0 - GUARANTEED QUALITY DROP (SOLANA ONLY)
+// Optimized for: MC $25K-$75K | Min Volume $2K | Min Momentum +5%
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
@@ -17,11 +17,11 @@ const {
 } = require("discord.js");
 
 // --- CONFIGURATION ---
-const BOT_NAME = "1G VAULT V5.1"; // Final requested name
+const BOT_NAME = "1G VAULT V5.1"; 
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://jup.ag/"; 
-// !!! CRITICAL CHANGE: ONLY SOLANA IS ENABLED !!!
+// !!! CRITICAL: ONLY SOLANA IS ENABLED !!!
 const CHAINS = { SOL: "solana" }; 
 
 // --- SCHEDULING ---
@@ -30,17 +30,20 @@ const MAX_DROP_INTERVAL_MS = Number(process.env.MAX_DROP_INTERVAL_MS) || 120_000
 const FLEX_INTERVAL_MS = Number(process.env.FLEX_INTERVAL_MS) || 90_000;
 const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
 
-// --- MEME FILTER SETTINGS (EXACT USER SPECIFICATIONS) ---
+// --- MEME FILTER SETTINGS (OPTIMIZED FOR HIGH-SUCCESS DROPS) ---
 const MEME_SETTINGS = {
-  minMarketCap: Number(process.env.MC_MIN) || 23000,        
-  maxMarketCap: Number(process.env.MC_MAX) || 80000, 
+  // TIGHT MARKET CAP FOR NEWLY GRADUATED COINS (25K - 75K)
+  minMarketCap: Number(process.env.MC_MIN) || 25000,        
+  maxMarketCap: Number(process.env.MC_MAX) || 75000, 
   
+  // MINIMUM VOLUME AND LIQUIDITY
   minLiquidityUsd: Number(process.env.LIQ_MIN) || 2000,   
-  minVolumeH1: Number(process.env.VOL_H1_MIN) || 3000,   
-  maxVolumeH1: Number(process.env.VOL_H1_MAX) || 24000,   
+  minVolumeH1: Number(process.env.VOL_H1_MIN) || 2000,   // LOWERED MIN VOLUME
+  // maxVolumeH1 REMOVED to allow high-volume, pre-80K MC pumps
   
-  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 10, 
-  minScore: Number(process.env.SCORE_MIN) || 50,          
+  // MINIMUM MOMENTUM (RELAXED TO +5% FOR SUCCESS)
+  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 5, 
+  minScore: Number(process.env.SCORE_MIN) || 30,          // LOWERED MIN SCORE to ensure announcement
   flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, 
 };
 
@@ -116,7 +119,6 @@ async function fetchDexPairs(chain) {
   const url = `https://api.dexscreener.com/latest/dex/search?q=${query}`;
   const j = await retryFetch(url);
   
-  // NOTE: This filter is crucial since we only allow 'solana' in the CHAINS object now.
   const pairs = j?.pairs || [];
   const filteredPairs = pairs.filter(p => p.chainId?.toLowerCase() === chain.toLowerCase());
   
@@ -153,14 +155,15 @@ function scorePair(p) {
   const h1 = p.priceChange?.h1 || 0; 
   const m5 = p.priceChange?.m5 || 0; 
 
+  // Score adjusted to better reflect looser filters while prioritizing momentum
   let s = 10; 
-  s += Math.min(h1 * 2, 40); 
-  s += Math.min(m5 * 1.5, 20); 
-  if (liq > 20_000) s += 10;
-  if (vol > 10_000) s += 10;
+  s += Math.min(h1 * 4, 50); // Increased H1 weight
+  s += Math.min(m5 * 2, 20); 
+  if (liq > 5000) s += 10;
+  if (vol > 5000) s += 10;
   
   if (p._source === 'axiom' || p._source === 'gmgn') {
-      s += 20; 
+      s += 10; 
   }
 
   return Math.min(99, Math.round(s));
@@ -173,7 +176,7 @@ function passesMemeFilters(p) {
   const h1 = p.priceChange?.h1 || 0;
   const score = scorePair(p);
   
-  // MARKET CAP CHECK (23K - 80K)
+  // MARKET CAP CHECK (25K - 75K)
   if (mc < MEME_SETTINGS.minMarketCap || mc > MEME_SETTINGS.maxMarketCap) { 
       return false; 
   }
@@ -183,12 +186,12 @@ function passesMemeFilters(p) {
       return false; 
   }
   
-  // VOLUME CHECK (3K - 24K)
-  if (vol < MEME_SETTINGS.minVolumeH1 || vol > MEME_SETTINGS.maxVolumeH1) { 
+  // MIN VOLUME CHECK (Min 2K)
+  if (vol < MEME_SETTINGS.minVolumeH1) { 
       return false; 
   }
   
-  // MOMENTUM CHECK (+10% H1)
+  // MOMENTUM CHECK (+5% H1)
   if (h1 < MEME_SETTINGS.minPriceChangeH1) { 
       return false; 
   }
@@ -214,7 +217,6 @@ async function collectCandidates() {
   sources.push(...await fetchExternalFeed(AXIOM_FEED_URL, "axiom"));
   sources.push(...await fetchExternalFeed(GMGN_FEED_URL, "gmgn"));
 
-  // Coingecko markets are typically large cap and won't meet MC filters, but keeping the logic clean.
   if (COINGECKO_MARKETS) {
     const cgUrl = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false`;
     const arr = await retryFetch(cgUrl);
@@ -228,7 +230,6 @@ async function collectCandidates() {
             pairAddress: c.contract_address || c.id,
             _source: "coingecko",
         }));
-        // Note: Coingecko API is less reliable for low-cap/meme coins, but included for completeness.
         sources.push(...cgPairs);
     }
   }
@@ -304,7 +305,7 @@ async function dropCall() {
     }
 
     if (!best) {
-      console.log("[SCAN] No candidate passed all filters and score checks. Required MC: 23K-80K, Vol: 3K-24K, H1: +10%.");
+      console.log("[SCAN] No candidate passed all filters and score checks. Required MC: 25K-75K, Min Vol: 2K, Min H1: +5%.");
       return;
     }
 
@@ -348,7 +349,6 @@ async function flexGains() {
     for (const [addr, data] of Array.from(tracking.entries())) {
       if (!data || data.reported) continue;
       
-      // Since we only track Solana, default chain is 'solana'
       const chain = data.chain?.toLowerCase?.() || "solana"; 
       const url = `https://api.dexscreener.com/latest/dex/pairs/${chain}/${addr}`;
       const j = await retryFetch(url);
