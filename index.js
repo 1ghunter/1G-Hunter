@@ -1,6 +1,6 @@
 // =======================================================
-// 1G VAULT V11.0 - AGGRESSIVE MOMENTUM HUNTER (SOLANA ONLY)
-// Optimized for: Max Momentum | Min Liquidity $2K | Min H1 +1%
+// 1G VAULT V15.0 - REFERRAL LINK INTEGRATION (SOLANA ONLY)
+// FIX: Added Axiom referral link to the announcement embed.
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
@@ -23,35 +23,37 @@ const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://jup.ag/"; 
 // !!! CRITICAL: ONLY SOLANA IS ENABLED !!!
 const CHAINS = { SOL: "solana" }; 
+// NEW: Referral Link
+const AXIOM_REF = "https://axiom.trade/@1gvault";
 
 // --- SCHEDULING ---
-const MIN_DROP_INTERVAL_MS = Number(process.env.MIN_DROP_INTERVAL_MS) || 45_000; // INCREASED SCAN FREQUENCY
+const MIN_DROP_INTERVAL_MS = Number(process.env.MIN_DROP_INTERVAL_MS) || 45_000; 
 const MAX_DROP_INTERVAL_MS = Number(process.env.MAX_DROP_INTERVAL_MS) || 75_000;
 const FLEX_INTERVAL_MS = Number(process.env.FLEX_INTERVAL_MS) || 90_000;
 const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
+const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; 
 
-// --- MEME FILTER SETTINGS (MINIMALIST) ---
+// --- MEME FILTER SETTINGS (AGGRESSIVE TRANSACTION CHECK) ---
 const MEME_SETTINGS = {
-  // MARKET CAP FILTERS DISABLED
   minMarketCap: 0,        
   maxMarketCap: 999999999, 
-  
-  // MINIMUM LIQUIDITY FOR SAFETY
   minLiquidityUsd: Number(process.env.LIQ_MIN) || 2000,   
-  
-  // MINIMUM VOLUME DISABLED
   minVolumeH1: 0,   
-  
-  // MINIMUM MOMENTUM (BARE MINIMUM ACTIVITY)
-  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 1, // +1% H1
+  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 1, 
   minScore: 0, 
   flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, 
+  
+  // AGGRESSIVE TRANSACTION FILTERS (H1)
+  minTxnsH1: Number(process.env.TXNS_H1_MIN) || 200,     
+  minBuysH1: Number(process.env.BUYS_H1_MIN) || 100,     
+  minSellsH1: Number(process.env.SELLS_H1_MIN) || 100,    
 };
 
 // --- EXTERNAL SOURCES ---
 const AXIOM_FEED_URL = process.env.AXIOM_FEED_URL || null;
 const GMGN_FEED_URL = process.env.GMGN_FEED_URL || null;
 const COINGECKO_MARKETS = process.env.ENABLE_COINGECKO === "1";
+const SELF_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL || null;
 
 if (!TOKEN || !CHANNEL_ID) {
   console.error("Missing DISCORD_TOKEN or CHANNEL_ID in env");
@@ -114,15 +116,13 @@ const retryFetch = async (url, retries = 2) => {
   return null;
 };
 
-// --- DATA SOURCES (NEW AGGRESSIVE SCANNING) ---
+// --- DATA SOURCES ---
 async function fetchDexPairs(chain) {
-  // Use a broad search query to get a large set of active pairs on Solana
   const query = `new`; 
   const url = `https://api.dexscreener.com/latest/dex/search?q=${query}`;
   const j = await retryFetch(url);
   
   const pairs = j?.pairs || [];
-  // Filter only for the desired chain (Solana)
   const filteredPairs = pairs.filter(p => p.chainId?.toLowerCase() === chain.toLowerCase());
   
   if (filteredPairs.length === 0) {
@@ -141,7 +141,6 @@ async function fetchExternalFeed(url, source) {
     if (!j) return [];
     const pairs = Array.isArray(j) ? j : (Array.isArray(j.pairs) ? j.pairs : []);
     
-    // Filter external feeds to SOLANA only if chain info is available
     return pairs.filter(p => {
         const chain = p.chainId || p.chain;
         return !chain || chain.toLowerCase() === 'solana';
@@ -156,13 +155,17 @@ function scorePair(p) {
   const liq = p.liquidity?.usd || 0;
   const h1 = p.priceChange?.h1 || 0; 
   const m5 = p.priceChange?.m5 || 0; 
+  const buysH1 = p.txns?.h1?.buys || 0;
+  const sellsH1 = p.txns?.h1?.sells || 0;
 
-  // Score heavily weighted toward H1 momentum and then M5
   let s = 10; 
-  s += Math.min(h1 * 5, 50); // Aggressive H1 weighting (50 max)
-  s += Math.min(m5 * 3, 20); // M5 weighting (20 max)
+  s += Math.min(h1 * 5, 50); 
+  s += Math.min(m5 * 3, 20); 
   
-  // Bonus for liquidity for safety
+  if (buysH1 >= MEME_SETTINGS.minBuysH1 && sellsH1 >= MEME_SETTINGS.minSellsH1) {
+      s += 10;
+  }
+
   if (liq > 5000) s += 5;
   if (liq > 10000) s += 5;
 
@@ -172,14 +175,25 @@ function scorePair(p) {
 function passesMemeFilters(p) {
   const liq = p.liquidity?.usd || 0;
   const h1 = p.priceChange?.h1 || 0;
+  const buysH1 = p.txns?.h1?.buys || 0;
+  const sellsH1 = p.txns?.h1?.sells || 0;
+  const totalTxnsH1 = p.txns?.h1?.buys + p.txns?.h1?.sells || 0;
 
-  // 1. MIN LIQUIDITY CHECK (Min $2K for safety)
   if (liq < MEME_SETTINGS.minLiquidityUsd) { 
       return false; 
   }
   
-  // 2. MIN MOMENTUM CHECK (+1% H1)
   if (h1 < MEME_SETTINGS.minPriceChangeH1) { 
+      return false; 
+  }
+
+  if (totalTxnsH1 < MEME_SETTINGS.minTxnsH1) {
+      return false;
+  }
+  if (buysH1 < MEME_SETTINGS.minBuysH1) { 
+      return false; 
+  }
+  if (sellsH1 < MEME_SETTINGS.minSellsH1) { 
       return false; 
   }
   
@@ -190,18 +204,16 @@ function passesMemeFilters(p) {
 async function collectCandidates() {
   const sources = [];
 
-  // Fetch only Solana pairs
   const dexPromises = Object.values(CHAINS).map(c => fetchDexPairs(c));
   const dexResults = await Promise.all(dexPromises);
   dexResults.forEach(arr => sources.push(...arr));
 
-  // Fetch external feeds (filtered to Solana in fetchExternalFeed)
   sources.push(...await fetchExternalFeed(AXIOM_FEED_URL, "axiom"));
   sources.push(...await fetchExternalFeed(GMGN_FEED_URL, "gmgn"));
 
   const map = new Map();
   for (const s of sources) {
-    const addr = normalizeAddr(s.pairAddress || s.baseToken?.address || s.address || s.id);
+    const addr = normalizeAddr(s.baseToken?.address || s.pairAddress || s.address || s.id);
     if (!addr) continue;
     if (!map.has(addr)) map.set(addr, s);
   }
@@ -217,6 +229,8 @@ async function createCallEmbed(best) {
   const volH1 = best.volume?.h1 || 0;
   const mc = best.marketCap || best.fdv || 0;
   const score = best.score;
+  const buysH1 = best.txns?.h1?.buys || 0;
+  const sellsH1 = best.txns?.h1?.sells || 0;
 
   const chainName = (best._sourceChain || best._source || "SOLANA").toString().toUpperCase();
   const color = score > 60 ? 0x00FF44 : score > 30 ? 0xFF9900 : 0xFF0000;
@@ -236,11 +250,17 @@ async function createCallEmbed(best) {
         `📈 **1H Momentum:** ${best.priceChange?.h1?.toFixed(1) || 0}%`,
         `📊 **1H Volume:** $${(volH1 / 1000).toFixed(1)}K`, 
         `---`,
-        `**Safety:** ${safety} - *Not financial advice. DYOR.*`
+        `🟢 **1H Buys:** ${buysH1}`,
+        `🔴 **1H Sells:** ${sellsH1}`,
+        `---`,
+        `**Safety:** ${safety} - *Not financial advice. DYOR.*`,
+        // ADDED REFERRAL LINK TO DESCRIPTION
+        `**Join Our Community:** [Trade with 1G Vault on Axiom](${AXIOM_REF})`
       ].join("\n")
     )
     .setTimestamp()
-    .setFooter({ text: `${BOT_NAME}` });
+    // ADDED REFERRAL LINK TO FOOTER
+    .setFooter({ text: `Powered by ${BOT_NAME} | Join Axiom: ${AXIOM_REF}` }); 
 
   const chartChain = best._sourceChain || best.chain || 'solana'; 
   const chartUrl = `https://dexscreener.com/${chartChain}/${best.addr}`;
@@ -260,7 +280,7 @@ async function dropCall() {
 
     let best = null;
     for (const p of candidates) {
-      const addr = normalizeAddr(p.pairAddress || p.baseToken?.address || p.address || p.id);
+      const addr = normalizeAddr(p.baseToken?.address || p.pairAddress || p.address || p.id);
       if (!addr || called.has(addr)) continue;
 
       if (!passesMemeFilters(p)) continue;
@@ -270,7 +290,7 @@ async function dropCall() {
     }
 
     if (!best) {
-      console.log("[SCAN] No candidate passed the minimum filters. Required Min Liq: 2K, Min H1: +1%.");
+      console.log("[SCAN] No candidate passed the minimum filters.");
       return;
     }
 
@@ -290,16 +310,21 @@ async function dropCall() {
     });
     if (!msg) return;
 
-    // Record for PnL tracking (Flex)
-    tracking.set(best.addr, {
-      msgId: msg.id,
-      entryMC: best.marketCap || 1,
-      entryLiq: best.liquidity?.usd || 0,
-      symbol: best.baseToken?.symbol,
-      reported: false,
-      chain: best._sourceChain || best.chain || best._source || "solana",
-      ts: Date.now(),
-    });
+    const entryMC = best.marketCap || 0;
+    
+    if (entryMC <= 0) {
+        console.warn(`[TRACKING] Call ${best.addr} failed to get valid Market Cap (${entryMC}K). Skipping PnL tracking.`);
+    } else {
+        tracking.set(best.addr, {
+          msgId: msg.id,
+          entryMC: entryMC, 
+          entryLiq: best.liquidity?.usd || 0,
+          symbol: best.baseToken?.symbol,
+          reported: false,
+          chain: best._sourceChain || best.chain || best._source || "solana",
+          ts: Date.now(),
+        });
+    }
 
     saveState();
     console.log(`[ANNOUNCE] CALL SUCCESS: ${best.addr} $${best.baseToken?.symbol} Score: ${best.score}`);
@@ -312,57 +337,54 @@ async function dropCall() {
 async function flexGains() {
   try {
     for (const [addr, data] of Array.from(tracking.entries())) {
-      if (!data || data.reported) continue;
+      if (!data || data.reported || !data.entryMC || data.entryMC <= 0) {
+        if (data && data.entryMC <= 0) console.warn(`[FLEX SKIP] Tracking data for ${addr} has invalid Entry MC.`);
+        continue;
+      }
       
       const chain = data.chain?.toLowerCase?.() || "solana"; 
-      const url = `https://api.dexscreener.com/latest/dex/pairs/${chain}/${addr}`;
+      
+      const url = `https://api.dexscreener.com/latest/dex/tokens/${addr}`;
       const j = await retryFetch(url);
       
-      const p = j?.pair || j?.pairs?.[0]; 
+      const p = j?.pairs?.find(pair => 
+          pair.baseToken?.address?.toLowerCase() === addr
+          && pair.chainId?.toLowerCase() === chain
+      ); 
       
-      if (!p) continue;
+      if (!p) {
+        const fallback = j?.pairs?.find(pair => pair.baseToken?.address?.toLowerCase() === addr);
+        if(fallback) {
+             const currentMC = fallback.marketCap || fallback.fdv || 0;
+             const currentLiq = fallback.liquidity?.usd || 0;
+             
+             if (data.entryMC === 0) continue; 
 
-      const currentMC = p.marketCap || p.fdv || 0;
-      const currentLiq = p.liquidity?.usd || 0;
-      const gain = ((currentMC - (data.entryMC || 1)) / (data.entryMC || 1)) * 100;
-      
-      if (gain < MEME_SETTINGS.flexGainMinPct) continue;
+             const gain = ((currentMC - data.entryMC) / data.entryMC) * 100;
 
-      const isRug = (data.entryLiq > 5000 && currentLiq < data.entryLiq * 0.3); 
-      if (isRug) {
-        console.log(`[FLEX] Skipped flex (possible rug, Liq drop): ${addr}`);
-        data.reported = true;
-        tracking.set(addr, data);
-        saveState();
+             if (gain < MEME_SETTINGS.flexGainMinPct) continue;
+
+             await postFlexReply(data, currentMC, currentLiq, gain);
+             tracking.get(addr).reported = true;
+             saveState();
+        }
         continue;
       }
 
-      const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
-      if (!channel) continue;
-      const orig = await channel.messages.fetch(data.msgId).catch(() => null);
-      if (!orig) continue;
+      const currentMC = p.marketCap || p.fdv || 0;
+      const currentLiq = p.liquidity?.usd || 0;
+      
+      if (data.entryMC === 0) continue; 
+      
+      const gain = ((currentMC - data.entryMC) / data.entryMC) * 100;
+      
+      if (gain < MEME_SETTINGS.flexGainMinPct) continue;
+      
+      await postFlexReply(data, currentMC, currentLiq, gain);
 
-      // Format the flex message
-      const fire = gain > 10000 ? "🔥 10000%" : gain > 1000 ? "⭐ 1000%" : gain > 500 ? "🚀 500%" : `${Math.round(gain)}%`;
-      const pnl = gain.toFixed(1);
-      const profitText = `${fire} GAIN! $${data.symbol} UP ${pnl}% FROM ${BOT_NAME} CALL!`;
-
-      const flexEmbed = new EmbedBuilder()
-        .setColor(0x00FF44) 
-        .setTitle(profitText)
-        .setDescription([
-          `**Entry MC:** $${(data.entryMC / 1000).toFixed(1)}K → **Current MC:** $${(currentMC / 1000).toFixed(1)}K`,
-          `**Current Liq:** $${(currentLiq / 1000).toFixed(1)}K`,
-          `*PnL reported at ${new Date().toLocaleTimeString()}*`
-        ].join("\n"))
-        .setTimestamp();
-
-      await orig.reply({ embeds: [flexEmbed] }).catch(() => null);
-
-      data.reported = true;
-      tracking.set(addr, data);
+      tracking.get(addr).reported = true;
       saveState();
-      console.log(`[FLEX] PnL REPORTED: ${addr} $${data.symbol}, ${pnl}%`);
+      console.log(`[FLEX] PnL REPORTED: ${addr} $${data.symbol}, ${gain.toFixed(1)}%`);
     }
 
     const now = Date.now();
@@ -379,11 +401,58 @@ async function flexGains() {
   }
 }
 
+async function postFlexReply(data, currentMC, currentLiq, gain) {
+  const isRug = (data.entryLiq > 5000 && currentLiq < data.entryLiq * 0.3); 
+  if (isRug) {
+    console.log(`[FLEX] Skipped flex (possible rug, Liq drop): ${data.addr}`);
+    return;
+  }
+
+  const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
+  if (!channel) return;
+  const orig = await channel.messages.fetch(data.msgId).catch(() => null);
+  if (!orig) return;
+
+  const fire = gain > 1000000 ? "🔥🔥🔥 +1000000% GAIN 🔥🔥🔥" : gain > 10000 ? "🔥 10000%" : gain > 1000 ? "⭐ 1000%" : gain > 500 ? "🚀 500%" : `${Math.round(gain)}%`;
+  const pnl = gain.toFixed(1);
+  const profitText = `${fire} GAIN! $${data.symbol} UP ${pnl}% FROM ${BOT_NAME} CALL!`;
+
+  const flexEmbed = new EmbedBuilder()
+    .setColor(0x00FF44) 
+    .setTitle(profitText)
+    .setDescription([
+      `**Entry MC:** $${(data.entryMC / 1000).toFixed(1)}K → **Current MC:** $${(currentMC / 1000).toFixed(1)}K`,
+      `**Current Liq:** $${(currentLiq / 1000).toFixed(1)}K`,
+      `*PnL reported at ${new Date().toLocaleTimeString()}*`
+    ].join("\n"))
+    .setTimestamp();
+
+  await orig.reply({ embeds: [flexEmbed] }).catch(() => null);
+}
+
+// --- NEW SELF-PINGING LOGIC ---
+function startHealthCheck() {
+    if (!SELF_URL) {
+        console.warn("[HEALTH] SELF_URL environment variable is not set. Bot may go idle.");
+        return;
+    }
+    console.log(`[HEALTH] Starting self-ping to ${SELF_URL} every ${HEALTH_CHECK_INTERVAL_MS / 60000} minutes.`);
+    setInterval(async () => {
+        try {
+            await fetch(SELF_URL);
+        } catch (e) {
+            console.warn("[HEALTH] Self-ping failed:", e.message);
+        }
+    }, HEALTH_CHECK_INTERVAL_MS);
+}
+
 
 // --- SCHEDULER & DISCORD INIT ---
 client.once("ready", async () => {
   console.log(`[BOT] ${BOT_NAME} LIVE — ${new Date().toISOString()}`);
   loadState();
+
+  startHealthCheck();
 
   await dropCall();
 
