@@ -1,5 +1,14 @@
-"dependencies": {
-  "discord.js": "^14.17.1", 
-  "dotenv": "^16.4.5",
-  "node-fetch": "^2.6.7"  
+{
+  "name": "solana-sniper",
+  "version": "1.0.0",
+  "description": "1G Vault Sniper Bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.17.1", 
+    "dotenv": "^16.4.5",
+    "node-fetch": "^2.6.7"  
+  }
 }
