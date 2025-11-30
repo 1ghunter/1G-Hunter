@@ -1,13 +1,13 @@
 // =======================================================
-// 1G VAULT V15.4 - TELEGRAM GROUP STRATEGY INTEGRATION
-// CHANGE: Added TG_FEED_URL, and implemented an auto-whitelist bypass
-// for all tokens coming from the 'telegram' source.
-// NOTE: You must set the TG_FEED_URL environment variable to your
-// Telegram monitoring API endpoint for this strategy to work.
+// 1G VAULT V15.6 - PROFESSIONAL STABILITY FIX (NODE-FETCH)
+// CHANGE: Enforced use of node-fetch (requires 'node-fetch' in package.json)
+//         to guarantee network compatibility across Node.js versions.
+//         Added explicit checks for critical environment variables.
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
+const fetch = require('node-fetch'); // CRITICAL: Requires 'node-fetch' installed (npm install node-fetch@2)
 const stateFile = path.resolve(__dirname, "state.json");
 
 const {
@@ -20,7 +20,7 @@ const {
 } = require("discord.js");
 
 // --- CONFIGURATION ---
-const BOT_NAME = "1G VAULT V15.4 (Telegram Feed Integration)"; 
+const BOT_NAME = "1G VAULT V15.6 (Professional Stable)"; 
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://jup.ag/"; 
@@ -28,45 +28,44 @@ const CHAINS = { SOL: "solana" };
 
 // --- EXTERNAL FEED LINKS ---
 const AXIOM_REF = "https://axiom.trade/@1gvault";
-// !!! CRITICAL: SET THESE ENVIRONMENT VARIABLES !!!
 const AXIOM_FEED_URL = process.env.AXIOM_FEED_URL || null;
 const PUMPFUN_API_URL = process.env.PUMPFUN_API_URL || null; 
 const GMGN_FEED_URL = process.env.GMGN_FEED_URL || null;
-// NEW: TELEGRAM FEED FOR USER'S PUMPFUN SIGNALS (SET TG_FEED_URL IN ENV)
 const TELEGRAM_FEED_URL = process.env.TG_FEED_URL || null; 
 
 // --- SCHEDULING ---
 const MIN_DROP_INTERVAL_MS = 1000; 
-const MAX_DROP_INTERVAL_MS = 1000;
 const FLEX_INTERVAL_MS = Number(process.env.FLEX_INTERVAL_MS) || 90_000;
 const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; 
 const CALL_HISTORY_CLEAR_MS = 3 * 60 * 60 * 1000; 
 
-// --- MEME FILTER SETTINGS (MODERATE AGGRESSIVE FALLBACK) ---
-// These filters are used for DexScreener/organic scans, but bypassed for the 'telegram' source.
+// --- FILTER SETTINGS (Minimal) ---
 const MEME_SETTINGS = {
-  minMarketCap: 0,        
-  maxMarketCap: 999999999, 
-  minLiquidityUsd: Number(process.env.LIQ_MIN) || 1000,   // $1K minimum
-  minVolumeH1: 0,   
-  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 0, 
-  minScore: 0, 
+  minLiquidityUsd: 1,      // Minimal check to avoid complete junk tokens
   flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, 
   
-  // Transaction filters 
+  // These are only used for SCORING, not filtering in V15.5/V15.6
   minTxnsH1: Number(process.env.TXNS_H1_MIN) || 100,     
   minBuysH1: Number(process.env.BUYS_H1_MIN) || 50,     
   minSellsH1: Number(process.env.SELLS_H1_MIN) || 50,    
 };
 
-const COINGECKO_MARKETS = process.env.ENABLE_COINGECKO === "1";
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL || null;
 
-if (!TOKEN || !CHANNEL_ID) {
-  console.error("Missing DISCORD_TOKEN or CHANNEL_ID in env");
+// --- CRITICAL ENVIRONMENT CHECKS ---
+if (!TOKEN || TOKEN.length < 50) {
+  console.error("❌ CRITICAL ERROR: DISCORD_TOKEN is missing or invalid. Check your environment variables.");
   process.exit(1);
 }
+if (!CHANNEL_ID || CHANNEL_ID.length < 15) {
+  console.error("❌ CRITICAL ERROR: CHANNEL_ID is missing or invalid. Check your environment variables.");
+  process.exit(1);
+}
+if (!TELEGRAM_FEED_URL) {
+    console.warn("⚠️ WARNING: TG_FEED_URL is not set. Telegram auto-snipe feature is disabled. Only Axiom/GMGN/DexScreener feeds will be used.");
+}
+
 // =======================================================
 
 const client = new Client({
@@ -108,11 +107,16 @@ function saveState() {
 // --- UTILITIES ---
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const normalizeAddr = (a) => (a || "").toLowerCase();
-const retryFetch = async (url, retries = 2) => {
+
+// Robust fetch utility using 'node-fetch'
+async function retryFetch(url, retries = 2) {
   for (let i = 0; i <= retries; i++) {
     try {
+      // Use the imported 'fetch' which is now guaranteed to be node-fetch
       const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        throw new Error(`HTTP Error Status: ${res.status}`);
+      }
       return await res.json();
     } catch (err) {
       if (i === retries) {
@@ -123,9 +127,9 @@ const retryFetch = async (url, retries = 2) => {
     }
   }
   return null;
-}};
+}
 
-// --- DATA SOURCES ---
+// --- DATA SOURCES (UNCHANGED LOGIC) ---
 async function fetchDexPairs(chain) {
   const query = `new`; 
   const url = `https://api.dexscreener.com/latest/dex/search?q=${query}`;
@@ -197,7 +201,6 @@ async function fetchPumpGraduations(url) {
     }
 }
 
-// --- CORE SCANNER LOGIC ---
 async function collectCandidates() {
   const sources = [];
 
@@ -208,7 +211,6 @@ async function collectCandidates() {
   sources.push(...await fetchExternalFeed(AXIOM_FEED_URL, "axiom"));
   sources.push(...await fetchExternalFeed(GMGN_FEED_URL, "gmgn"));
   sources.push(...await fetchPumpGraduations(PUMPFUN_API_URL));
-  // NEW: Add the Telegram feed source
   sources.push(...await fetchExternalFeed(TELEGRAM_FEED_URL, "telegram")); 
 
   const map = new Map();
@@ -225,7 +227,7 @@ async function collectCandidates() {
   return Array.from(map.values());
 }
 
-// --- SCORING & FILTERING ---
+// --- SCORING & FILTERING (MINIMAL/TELEGRAM FOCUS) ---
 
 function scorePair(p) {
   const liq = p.liquidity?.usd || 0;
@@ -238,6 +240,7 @@ function scorePair(p) {
   s += Math.min(h1 * 5, 50); 
   s += Math.min(m5 * 3, 20); 
   
+  // High score boost if traditional metrics are met (for DexScreeners)
   if (buysH1 >= MEME_SETTINGS.minBuysH1 && sellsH1 >= MEME_SETTINGS.minSellsH1) {
       s += 10;
   }
@@ -245,7 +248,7 @@ function scorePair(p) {
   if (liq > 5000) s += 5;
   if (liq > 10000) s += 5;
   
-  // High score boost for whitelisted sources
+  // CRITICAL: High score boost for whitelisted sources (Telegram/Axiom)
   if (p._source?.toLowerCase() === 'telegram' || p._source?.toLowerCase() === 'axiom') {
       s += 20; 
   }
@@ -254,41 +257,33 @@ function scorePair(p) {
 }
 
 function passesMemeFilters(p) {
-  // NEW LOGIC: BYPASS filters if the token came from the specified Telegram feed
+  // TELEGRAM BYPASS: Auto-whitelist any token from the Telegram feed
   if (p._source?.toLowerCase() === 'telegram') {
       console.log(`[PASS] Token $${p.baseToken?.symbol || 'UNKNOWN'} (Source: Telegram) is auto-whitelisted.`);
       return true;
   }
   
-  // --- Standard Filter Check (Fallback for DexScreener/GMGN/Axiom) ---
+  // --- STANDARD FILTER CHECK (MINIMAL) ---
   const liq = p.liquidity?.usd || 0;
-  const h1 = p.priceChange?.h1 || 0;
-  const buysH1 = p.txns?.h1?.buys || 0;
-  const sellsH1 = p.txns?.h1?.sells || 0;
-  const totalTxnsH1 = p.txns?.h1?.buys + p.txns?.h1?.sells || 0;
-
+  
+  // Require a minimum liquidity to avoid completely fake tokens.
   if (liq < MEME_SETTINGS.minLiquidityUsd) { 
       return false; 
   }
-  
-  if (h1 < MEME_SETTINGS.minPriceChangeH1) { 
-      return false; 
+
+  // If the source is DexScreener, check for minimal life.
+  if (p._sourceChain === 'solana') {
+    const totalTxnsH1 = p.txns?.h1?.buys + p.txns?.h1?.sells || 0;
+    // Require at least 2 total transactions in the last hour.
+    if (totalTxnsH1 < 2) {
+      return false;
+    }
   }
 
-  if (totalTxnsH1 < MEME_SETTINGS.minTxnsH1) {
-      return false;
-  }
-  if (buysH1 < MEME_SETTINGS.minBuysH1) { 
-      return false; 
-  }
-  if (sellsH1 < MEME_SETTINGS.minSellsH1) { 
-      return false; 
-  }
-  
   return true;
 }
 
-// --- ANNOUNCEMENT ---
+// --- ANNOUNCEMENT (UNCHANGED LOGIC) ---
 async function createCallEmbed(best) {
   const baseSym = best.baseToken?.symbol || "TOKEN";
   const liqUsd = best.liquidity?.usd || 0;
@@ -338,7 +333,7 @@ async function createCallEmbed(best) {
   return { embeds: [embed], components: [buttons] };
 }
 
-// --- CORE LOGIC ---
+// --- CORE LOGIC (UNCHANGED LOGIC) ---
 async function dropCall() {
   try {
     const candidates = await collectCandidates();
@@ -362,7 +357,6 @@ async function dropCall() {
       return;
     }
 
-    // Prioritize by score, ensuring auto-whitelisted tokens (like Telegram) get called first
     validCalls.sort((a, b) => b.score - a.score);
 
     console.log(`[ANNOUNCE] Found ${validCalls.length} high-potential tokens to announce.`);
@@ -413,7 +407,7 @@ async function dropCall() {
   }
 }
 
-// --- PNL / FLEX LOGIC ---
+// --- PNL / FLEX LOGIC (UNCHANGED LOGIC) ---
 async function flexGains() {
   try {
     for (const [addr, data] of Array.from(tracking.entries())) {
@@ -510,7 +504,7 @@ async function postFlexReply(data, currentMC, currentLiq, gain) {
   await orig.reply({ embeds: [flexEmbed] }).catch(() => null);
 }
 
-// --- SELF-PINGING LOGIC ---
+// --- SELF-PINGING LOGIC (UNCHANGED LOGIC) ---
 function startHealthCheck() {
     if (!SELF_URL) {
         console.warn("[HEALTH] SELF_URL environment variable is not set. Bot may go idle.");
@@ -519,6 +513,7 @@ function startHealthCheck() {
     console.log(`[HEALTH] Starting self-ping to ${SELF_URL} every ${HEALTH_CHECK_INTERVAL_MS / 60000} minutes.`);
     setInterval(async () => {
         try {
+            // Use the explicit fetch function
             await fetch(SELF_URL);
         } catch (e) {
             console.warn("[HEALTH] Self-ping failed:", e.message);
@@ -557,7 +552,7 @@ client.once("ready", async () => {
   setInterval(saveState, SAVE_INTERVAL_MS);
 });
 
-// --- ADMIN COMMANDS ---
+// --- ADMIN COMMANDS (UNCHANGED LOGIC) ---
 client.on("messageCreate", async (msg) => {
   if (!msg.content || msg.channel.id !== CHANNEL_ID) return;
   const t = msg.content.toLowerCase().trim();
@@ -568,7 +563,7 @@ client.on("messageCreate", async (msg) => {
     const embed = new EmbedBuilder()
       .setColor(0x00FF00)
       .setTitle(`🚀 ${BOT_NAME} IS ONLINE`)
-      .setDescription("Solana Sniper is now in **Telegram Integration Mode**.")
+      .setDescription("Solana Sniper is now in **Minimal Filter/Telegram Integration Mode**.")
       .setFooter({ text: `Status Check: ${BOT_NAME}` });
     await msg.reply({ embeds: [embed] });
   }
@@ -598,6 +593,8 @@ client.on("messageCreate", async (msg) => {
 });
 
 client.login(TOKEN).catch((e) => {
-  console.error("Login failed:", e?.message || e);
+  // CRITICAL: Log a more informative message on login failure
+  console.error("❌ DISCORD LOGIN FAILED:", e?.message || e);
+  console.error("Please verify your DISCORD_TOKEN is correct and the bot has all required Intents enabled in the Developer Portal.");
   process.exit(1);
 });
