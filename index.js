@@ -1,6 +1,6 @@
 // =======================================================
-// 1G VAULT V6.0 - PERFECT QUALITY FILTER CONFIGURATION
-// Targets: MC $23K-$80K | Volume $3K-$24K | Momentum +10%
+// 1G VAULT V7.0 - PURE SOLANA FOCUS
+// Targets: Solana only. MC $23K-$80K | Volume $3K-$24K | Momentum +10%
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
@@ -21,7 +21,8 @@ const BOT_NAME = "1G VAULT V5.1"; // Final requested name
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://jup.ag/"; 
-const CHAINS = { SOL: "solana", BASE: "base", BNB: "bsc", ETH: "ethereum" };
+// !!! CRITICAL CHANGE: ONLY SOLANA IS ENABLED !!!
+const CHAINS = { SOL: "solana" }; 
 
 // --- SCHEDULING ---
 const MIN_DROP_INTERVAL_MS = Number(process.env.MIN_DROP_INTERVAL_MS) || 60_000;
@@ -31,16 +32,13 @@ const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
 
 // --- MEME FILTER SETTINGS (EXACT USER SPECIFICATIONS) ---
 const MEME_SETTINGS = {
-  // STRICT MARKET CAP FOR NEWLY GRADUATED COINS
   minMarketCap: Number(process.env.MC_MIN) || 23000,        
   maxMarketCap: Number(process.env.MC_MAX) || 80000, 
   
-  // STRICT VOLUME FOR HIGH VOLUME TRADES
   minLiquidityUsd: Number(process.env.LIQ_MIN) || 2000,   
   minVolumeH1: Number(process.env.VOL_H1_MIN) || 3000,   
-  maxVolumeH1: Number(process.env.VOL_H1_MAX) || 24000,   // New max volume filter
+  maxVolumeH1: Number(process.env.VOL_H1_MAX) || 24000,   
   
-  // MINIMUM MOMENTUM 
   minPriceChangeH1: Number(process.env.PCT_H1_MIN) || 10, 
   minScore: Number(process.env.SCORE_MIN) || 50,          
   flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, 
@@ -118,6 +116,7 @@ async function fetchDexPairs(chain) {
   const url = `https://api.dexscreener.com/latest/dex/search?q=${query}`;
   const j = await retryFetch(url);
   
+  // NOTE: This filter is crucial since we only allow 'solana' in the CHAINS object now.
   const pairs = j?.pairs || [];
   const filteredPairs = pairs.filter(p => p.chainId?.toLowerCase() === chain.toLowerCase());
   
@@ -136,7 +135,12 @@ async function fetchExternalFeed(url, source) {
     const j = await retryFetch(url);
     if (!j) return [];
     const pairs = Array.isArray(j) ? j : (Array.isArray(j.pairs) ? j.pairs : []);
-    return pairs.map(p => ({ ...p, _source: source }));
+    
+    // Filter external feeds to SOLANA only if chain info is available
+    return pairs.filter(p => {
+        const chain = p.chainId || p.chain;
+        return !chain || chain.toLowerCase() === 'solana';
+    }).map(p => ({ ...p, _source: source }));
   } catch {
     return [];
   }
@@ -201,13 +205,16 @@ function passesMemeFilters(p) {
 async function collectCandidates() {
   const sources = [];
 
+  // Fetch only Solana pairs
   const dexPromises = Object.values(CHAINS).map(c => fetchDexPairs(c));
   const dexResults = await Promise.all(dexPromises);
   dexResults.forEach(arr => sources.push(...arr));
 
+  // Fetch external feeds (filtered to Solana in fetchExternalFeed)
   sources.push(...await fetchExternalFeed(AXIOM_FEED_URL, "axiom"));
   sources.push(...await fetchExternalFeed(GMGN_FEED_URL, "gmgn"));
 
+  // Coingecko markets are typically large cap and won't meet MC filters, but keeping the logic clean.
   if (COINGECKO_MARKETS) {
     const cgUrl = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false`;
     const arr = await retryFetch(cgUrl);
@@ -221,6 +228,7 @@ async function collectCandidates() {
             pairAddress: c.contract_address || c.id,
             _source: "coingecko",
         }));
+        // Note: Coingecko API is less reliable for low-cap/meme coins, but included for completeness.
         sources.push(...cgPairs);
     }
   }
@@ -232,7 +240,7 @@ async function collectCandidates() {
     if (!map.has(addr)) map.set(addr, s);
   }
   
-  console.log(`[SCAN] Found ${map.size} unique candidates after deduplication.`);
+  console.log(`[SCAN] Found ${map.size} unique SOLANA candidates after deduplication.`);
   return Array.from(map.values());
 }
 
@@ -244,7 +252,7 @@ async function createCallEmbed(best) {
   const mc = best.marketCap || best.fdv || 0;
   const score = best.score;
 
-  const chainName = (best._sourceChain || best._source || "multi").toString().toUpperCase();
+  const chainName = (best._sourceChain || best._source || "SOLANA").toString().toUpperCase();
   const color = score > 60 ? 0x00FF44 : score > 30 ? 0xFF9900 : 0xFF0000;
   const safety = liqUsd > 10000 ? "✅ LOW RISK" : liqUsd > 2000 ? "⚠️ MODERATE RISK" : "🚨 HIGH RISK";
   const statusEmoji = score > 60 ? "🔥" : "🚀";
@@ -260,7 +268,7 @@ async function createCallEmbed(best) {
         `💰 **Mkt Cap:** $${(mc / 1000).toFixed(1)}K`,
         `💧 **Liquidity:** $${(liqUsd / 1000).toFixed(1)}K`,
         `📈 **1H Momentum:** ${best.priceChange?.h1?.toFixed(1) || 0}%`,
-        `📊 **1H Volume:** $${(volH1 / 1000).toFixed(1)}K`, // .toFixed(1) for better accuracy
+        `📊 **1H Volume:** $${(volH1 / 1000).toFixed(1)}K`, 
         `---`,
         `**Safety:** ${safety} - *Not financial advice. DYOR.*`
       ].join("\n")
@@ -323,7 +331,7 @@ async function dropCall() {
       entryLiq: best.liquidity?.usd || 0,
       symbol: best.baseToken?.symbol,
       reported: false,
-      chain: best._sourceChain || best.chain || best._source || "unknown",
+      chain: best._sourceChain || best.chain || best._source || "solana",
       ts: Date.now(),
     });
 
@@ -340,7 +348,8 @@ async function flexGains() {
     for (const [addr, data] of Array.from(tracking.entries())) {
       if (!data || data.reported) continue;
       
-      const chain = (data.chain === "BNB" ? "bsc" : data.chain?.toLowerCase?.()) || "solana"; 
+      // Since we only track Solana, default chain is 'solana'
+      const chain = data.chain?.toLowerCase?.() || "solana"; 
       const url = `https://api.dexscreener.com/latest/dex/pairs/${chain}/${addr}`;
       const j = await retryFetch(url);
       
@@ -442,18 +451,19 @@ client.on("messageCreate", async (msg) => {
     const embed = new EmbedBuilder()
       .setColor(0x00FF00)
       .setTitle(`🚀 ${BOT_NAME} IS ONLINE`)
-      .setDescription("Multi-Source Sniper is now active. Expect frequent memecoin calls.")
+      .setDescription("Solana Sniper is now active. Expect frequent high-quality memecoin calls.")
       .setFooter({ text: `Status Check: ${BOT_NAME}` });
     await msg.reply({ embeds: [embed] });
   }
 
   if (t === "/reset_called" || t === "/clear_called") {
     called.clear();
+    tracking.clear();
     saveState();
     const embed = new EmbedBuilder()
       .setColor(0xFF9900)
       .setTitle(`✅ HISTORY CLEARED`)
-      .setDescription("Called list has been reset. Next scan will check all tokens.")
+      .setDescription("Called list and tracking list have been reset. Next scan will check all tokens.")
       .setFooter({ text: BOT_NAME });
     await msg.reply({ embeds: [embed] });
   }
@@ -462,7 +472,7 @@ client.on("messageCreate", async (msg) => {
     const s = `Called: ${called.size}, Tracked: ${tracking.size}`;
     const embed = new EmbedBuilder()
       .setColor(0x0099FF)
-      .setTitle(`📊 ${BOT_NAME} STATS`)
+      .setTitle(`📊 ${BOT_NAME} STATS (Solana Only)`)
       .setDescription(s)
       .setFooter({ text: BOT_NAME });
     await msg.reply({ embeds: [embed] });
