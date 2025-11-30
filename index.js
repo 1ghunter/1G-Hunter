@@ -1,13 +1,12 @@
 // =======================================================
-// 1G VAULT V16.1 - EXTREME SENSITIVITY FLEX SNIPER
-// CHANGE: Filters lowered to the absolute minimum ($100 Liq) 
-//         to capture the earliest possible signals on DexScreener.
-//         Includes 10-second scan and Keyword Boost.
+// 1G VAULT V18.0 - EXTREME SPAMMER (Public API Max Velocity)
+// CHANGE: Max speed scan (5s), minimum filters ($50 Liq), 
+//         and high base score to trigger maximum calls from
+//         the public DexScreener 'new' list.
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
-// Ensure 'node-fetch' is installed via package.json
 const fetch = require('node-fetch'); 
 const stateFile = path.resolve(__dirname, "state.json");
 
@@ -21,32 +20,29 @@ const {
 } = require("discord.js");
 
 // --- CONFIGURATION ---
-const BOT_NAME = "1G VAULT V16.1 (ExtremeSniper)"; 
+const BOT_NAME = "1G VAULT V18.0 (ExtremeSpammer)"; 
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://jup.ag/"; 
 const CHAINS = { SOL: "solana" }; 
 const AXIOM_REF = "https://axiom.trade/@1gvault"; 
 
-// --- SCHEDULING ---
-const MIN_DROP_INTERVAL_MS = Number(process.env.MIN_DROP_INTERVAL_MS) || 10_000; // 10 seconds
+// --- SCHEDULING (MAX VELOCITY) ---
+const MIN_DROP_INTERVAL_MS = Number(process.env.MIN_DROP_INTERVAL_MS) || 5_000; // 5 seconds (MAXIMUM SPEED)
 const FLEX_INTERVAL_MS = Number(process.env.FLEX_INTERVAL_MS) || 60_000; 
 const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; 
 const CALL_HISTORY_CLEAR_MS = 1 * 60 * 60 * 1000; // Reset 'called' list every 1 hour
 
-// --- MEME FILTER SETTINGS (EXTREME MINIMUMS) ---
+// --- MEME FILTER SETTINGS (ABSOLUTE MINIMUMS) ---
 const MEME_SETTINGS = {
-  // EXTREME MINIMUMS 
-  minLiquidityUsd: Number(process.env.LIQ_MIN) || 100,     // Only $100 required
-  minPriceChangeH1: Number(process.env.PCT_H1_MIN) || -10, // Allows 10% dump
-  flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, 
-  
-  txnBoostThreshold: 50, // Lowered threshold for a transaction boost
+  minLiquidityUsd: Number(process.env.LIQ_MIN) || 50,     // Only $50 required
+  flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, // 30% to flex
+  txnBoostThreshold: 10, // Very low threshold for a transaction boost
 };
 
 // --- KEYWORD CONFIGURATION ---
-const KEYWORD_BOOST = 25; // Increased boost for extreme mode
+const KEYWORD_BOOST = 30; // Increased boost for extreme mode
 const KEYWORDS = [
     "pump fun", 
     "pump.fun", 
@@ -54,7 +50,7 @@ const KEYWORDS = [
     "raydium", 
     "new launch", 
     "fair launch",
-    "padre", // Added common words from the video
+    "padre", 
     "axiom", 
     "gmgn",
     "bullcember",
@@ -62,7 +58,7 @@ const KEYWORDS = [
     "michelle"
 ];
 
-// --- BOT INITIALIZATION ---
+// --- BOT INITIALIZATION (Same as previous versions) ---
 if (!TOKEN || TOKEN.length < 50) {
   console.error("❌ CRITICAL ERROR: DISCORD_TOKEN is missing or invalid.");
   process.exit(1);
@@ -80,7 +76,7 @@ let called = new Set();
 let tracking = new Map();
 let lastCallReset = Date.now(); 
 
-// --- STATE MANAGEMENT & UTILITIES ---
+// --- STATE MANAGEMENT & UTILITIES (Same as previous versions) ---
 function loadState() {
   try {
     if (fs.existsSync(stateFile)) {
@@ -130,16 +126,16 @@ async function retryFetch(url, retries = 2) {
   return null;
 }
 
-// --- DATA SOURCES ---
+// --- DATA SOURCES (Using DexScreener 'search?q=new') ---
 async function fetchDexPairs(chain) {
+  // This is the fastest available endpoint for finding NEW tokens on Solana.
   const query = `new`; 
   const url = `https://api.dexscreener.com/latest/dex/search?q=${query}`;
   const j = await retryFetch(url);
   
   const pairs = j?.pairs || [];
+  // Filter aggressively for the specified chain (Solana)
   const filteredPairs = pairs.filter(p => p.chainId?.toLowerCase() === chain.toLowerCase());
-  
-  // NOTE: DexScreener's 'new' endpoint returns all chains, we filter to 'solana'
   
   return filteredPairs.map(p => ({ ...p, _sourceChain: chain }));
 }
@@ -155,6 +151,7 @@ async function collectCandidates() {
     const addr = normalizeAddr(s.baseToken?.address || s.pairAddress || s.address || s.id);
     if (!addr) continue;
     
+    // Only keep the most relevant pair if multiple exist for the same token
     if (!map.has(addr) || (s.priceChange?.h1 || 0) > (map.get(addr).priceChange?.h1 || 0)) {
         map.set(addr, s);
     }
@@ -163,7 +160,7 @@ async function collectCandidates() {
   return Array.from(map.values());
 }
 
-// --- SCORING & FILTERING (ADJUSTED FOR V16.1) ---
+// --- SCORING & FILTERING (ADJUSTED FOR V18.0) ---
 
 function checkKeywords(p) {
     const name = (p.baseToken?.name || "").toLowerCase();
@@ -184,11 +181,11 @@ function scorePair(p) {
   const m5 = p.priceChange?.m5 || 0; 
   const totalTxnsH1 = (p.txns?.h1?.buys || 0) + (p.txns?.h1?.sells || 0);
 
-  let s = 25; // Higher base score
+  let s = 50; // HIGH BASE SCORE (50%) for being on the 'new' list
   
-  // Base score on momentum
-  s += Math.min(h1 * 4, 30); 
-  s += Math.min(m5 * 5, 20); 
+  // Score boost for momentum (less important now since we are aiming for the absolute start)
+  s += Math.min(h1 * 2, 10); 
+  s += Math.min(m5 * 3, 10); 
   
   // Score boost for transaction counts
   if (totalTxnsH1 > MEME_SETTINGS.txnBoostThreshold) {
@@ -196,10 +193,11 @@ function scorePair(p) {
   }
 
   // Score boost for liquidity (adjusted tiers)
+  if (liq > 100) s += 5;
   if (liq > 500) s += 5;
   if (liq > 1000) s += 5;
 
-  // KEYWORD BOOST 
+  // KEYWORD BOOST (The most aggressive filter left)
   if (checkKeywords(p)) {
       s += KEYWORD_BOOST; 
   }
@@ -209,26 +207,23 @@ function scorePair(p) {
 
 function passesMemeFilters(p) {
   const liq = p.liquidity?.usd || 0;
-  const h1 = p.priceChange?.h1 || 0;
   
-  // 1. MINIMUM LIQUIDITY ($100)
+  // 1. ABSOLUTE MINIMUM LIQUIDITY ($50)
   if (liq < MEME_SETTINGS.minLiquidityUsd) { 
       return false; 
   }
   
-  // 2. MINIMUM 1H PRICE CHANGE (-10%)
-  if (h1 < MEME_SETTINGS.minPriceChangeH1) { 
-      return false; 
-  }
-
+  // 2. ONLY SOLANA
   if (p._sourceChain !== 'solana') {
       return false;
   }
   
+  // 3. NO PRICE CHANGE FILTER (let it call everything that has liquidity)
+  
   return true;
 }
 
-// --- ANNOUNCEMENT ---
+// --- ANNOUNCEMENT (Same as previous versions) ---
 async function createCallEmbed(best) {
   const baseSym = best.baseToken?.symbol || "TOKEN";
   const liqUsd = best.liquidity?.usd || 0;
@@ -238,16 +233,16 @@ async function createCallEmbed(best) {
   const totalTxnsH1 = (best.txns?.h1?.buys || 0) + (best.txns?.h1?.sells || 0);
 
   const chainName = (best._sourceChain || "SOLANA").toString().toUpperCase();
-  const color = score > 65 ? 0x00FF44 : score > 45 ? 0xFF9900 : 0xFF0000; 
+  const color = score > 70 ? 0x00FF44 : score > 50 ? 0xFF9900 : 0xFF0000; 
   const safety = liqUsd > 1000 ? "⚠️ MODERATE RISK" : "🚨 HIGH RISK (Low Liq)";
-  const statusEmoji = score > 65 ? "🔥" : "🚀";
+  const statusEmoji = score > 70 ? "🔥🔥" : "🚀";
 
   const embed = new EmbedBuilder()
     .setColor(color)
     .setTitle(`${statusEmoji} ${score}% PROBABILITY - ${BOT_NAME} CALL: $${baseSym} ${statusEmoji}`)
     .setDescription(
       [
-        `**Source:** \`${chainName} (ExtremeScan/Keyword)\``,
+        `**Source:** \`${chainName} (MaxVelocity Scan)\``,
         `**CA:** \`${best.baseToken?.address || best.pairAddress || "unknown"}\``,
         `---`,
         `💰 **Mkt Cap:** $${(mc / 1000).toFixed(1)}K`,
@@ -299,13 +294,13 @@ async function dropCall() {
       }
 
       const score = scorePair(p);
-      if (score < 30) continue; // Minimum score threshold for V16.1
+      if (score < 50) continue; // Minimum score threshold for V18.0 is 50% base
 
       validCalls.push({ ...p, score, addr });
     }
 
     if (validCalls.length === 0) {
-      console.log("[SCAN] No new candidates passed the minimum score (Liq $100 / Score 30%).");
+      console.log(`[SCAN] No new candidates passed the minimum score (Liq $${MEME_SETTINGS.minLiquidityUsd} / Score 50%).`);
       return;
     }
 
@@ -318,7 +313,8 @@ async function dropCall() {
     }
 
     let announcements = 0;
-    for (const best of validCalls.slice(0, 3)) { 
+    // Announce up to 5 of the top scored signals every cycle to increase volume
+    for (const best of validCalls.slice(0, 5)) { 
         called.add(best.addr); 
         const messagePayload = await createCallEmbed(best);
 
@@ -347,7 +343,7 @@ async function dropCall() {
             });
         }
         
-        await sleep(500); 
+        await sleep(500); // Small delay to avoid Discord rate limiting within the batch
     }
 
     saveState();
@@ -357,7 +353,7 @@ async function dropCall() {
   }
 }
 
-// --- PNL / FLEX LOGIC (Unchanged) ---
+// --- PNL / FLEX LOGIC (Same as previous versions) ---
 async function flexGains() {
     try {
         for (const [addr, data] of Array.from(tracking.entries())) {
@@ -469,7 +465,7 @@ function startHealthCheck() {
 }
 
 
-// --- SCHEDULER & DISCORD INIT ---
+// --- SCHEDULER & DISCORD INIT (Same as previous versions) ---
 client.once("ready", async () => {
   console.log(`[BOT] ${BOT_NAME} LIVE — ${new Date().toISOString()}`);
   loadState();
@@ -492,7 +488,7 @@ client.once("ready", async () => {
   setInterval(saveState, SAVE_INTERVAL_MS);
 });
 
-// --- ADMIN COMMANDS ---
+// --- ADMIN COMMANDS (Same as previous versions) ---
 client.on("messageCreate", async (msg) => {
   if (!msg.content || msg.channel.id !== CHANNEL_ID) return;
   const t = msg.content.toLowerCase().trim();
@@ -503,7 +499,7 @@ client.on("messageCreate", async (msg) => {
     const embed = new EmbedBuilder()
       .setColor(0x00FF00)
       .setTitle(`🚀 ${BOT_NAME} IS ONLINE`)
-      .setDescription("Solana Sniper is running in **Extreme Sensitivity Mode ($100 Liq)**.")
+      .setDescription("Solana Sniper is running in **Extreme Spammer Mode ($50 Liq / 5s Scan)**.")
       .setFooter({ text: `Status Check: ${BOT_NAME}` });
     await msg.reply({ embeds: [embed] });
   }
