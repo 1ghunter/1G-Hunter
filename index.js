@@ -1,8 +1,6 @@
 // =======================================================
-// 1G VAULT V18.0 - EXTREME SPAMMER (Public API Max Velocity)
-// CHANGE: Max speed scan (5s), minimum filters ($50 Liq), 
-//         and high base score to trigger maximum calls from
-//         the public DexScreener 'new' list.
+// 1G VAULT V19.0 - SIMULATED VELOCITY SNIPER
+// Filters: Age 1-30min | Volume $30K-$400K
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
@@ -20,45 +18,44 @@ const {
 } = require("discord.js");
 
 // --- CONFIGURATION ---
-const BOT_NAME = "1G VAULT V18.0 (ExtremeSpammer)"; 
+const BOT_NAME = "1G VAULT V19.0 (VelocitySniper)"; 
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://jup.ag/"; 
 const CHAINS = { SOL: "solana" }; 
 const AXIOM_REF = "https://axiom.trade/@1gvault"; 
 
-// --- SCHEDULING (MAX VELOCITY) ---
-const MIN_DROP_INTERVAL_MS = Number(process.env.MIN_DROP_INTERVAL_MS) || 5_000; // 5 seconds (MAXIMUM SPEED)
+// --- SCHEDULING ---
+const MIN_DROP_INTERVAL_MS = Number(process.env.MIN_DROP_INTERVAL_MS) || 10_000; // 10 seconds scan rate
 const FLEX_INTERVAL_MS = Number(process.env.FLEX_INTERVAL_MS) || 60_000; 
 const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
-const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; 
-const CALL_HISTORY_CLEAR_MS = 1 * 60 * 60 * 1000; // Reset 'called' list every 1 hour
+const CALL_HISTORY_CLEAR_MS = 1 * 60 * 60 * 1000; 
 
-// --- MEME FILTER SETTINGS (ABSOLUTE MINIMUMS) ---
-const MEME_SETTINGS = {
-  minLiquidityUsd: Number(process.env.LIQ_MIN) || 50,     // Only $50 required
-  flexGainMinPct: Number(process.env.FLEX_PCT_MIN) || 30, // 30% to flex
-  txnBoostThreshold: 10, // Very low threshold for a transaction boost
+// --- SNIPER FILTER SETTINGS (YOUR REQUIRED CRITERIA) ---
+const FILTER_SETTINGS = {
+    // Volume (h1 volume is the most reliable public metric)
+    minVolumeUsd: 30000, 
+    maxVolumeUsd: 400000,
+    
+    // Age (in milliseconds, converted from your minute-based request)
+    minAgeMs: 1 * 60 * 1000,    // 1 minute
+    maxAgeMs: 30 * 60 * 1000,   // 30 minutes
+    
+    // Base Liquidity (Increased base liquidity for volume filtering)
+    minLiquidityUsd: 1000, 
+    
+    // Other Settings
+    flexGainMinPct: 30, 
 };
 
 // --- KEYWORD CONFIGURATION ---
-const KEYWORD_BOOST = 30; // Increased boost for extreme mode
+const KEYWORD_BOOST = 25; 
 const KEYWORDS = [
-    "pump fun", 
-    "pump.fun", 
-    "solana meme", 
-    "raydium", 
-    "new launch", 
-    "fair launch",
-    "padre", 
-    "axiom", 
-    "gmgn",
-    "bullcember",
-    "normie",
-    "michelle"
+    "pump fun", "pump.fun", "solana meme", "raydium", "new launch", 
+    "fair launch", "padre", "axiom", "gmgn", "bullcember", "normie", "michelle"
 ];
 
-// --- BOT INITIALIZATION (Same as previous versions) ---
+// --- BOT INITIALIZATION ---
 if (!TOKEN || TOKEN.length < 50) {
   console.error("❌ CRITICAL ERROR: DISCORD_TOKEN is missing or invalid.");
   process.exit(1);
@@ -76,7 +73,7 @@ let called = new Set();
 let tracking = new Map();
 let lastCallReset = Date.now(); 
 
-// --- STATE MANAGEMENT & UTILITIES (Same as previous versions) ---
+// --- STATE MANAGEMENT & UTILITIES ---
 function loadState() {
   try {
     if (fs.existsSync(stateFile)) {
@@ -126,15 +123,13 @@ async function retryFetch(url, retries = 2) {
   return null;
 }
 
-// --- DATA SOURCES (Using DexScreener 'search?q=new') ---
+// --- DATA SOURCES: DexScreener 'search?q=new' ---
 async function fetchDexPairs(chain) {
-  // This is the fastest available endpoint for finding NEW tokens on Solana.
   const query = `new`; 
   const url = `https://api.dexscreener.com/latest/dex/search?q=${query}`;
   const j = await retryFetch(url);
   
   const pairs = j?.pairs || [];
-  // Filter aggressively for the specified chain (Solana)
   const filteredPairs = pairs.filter(p => p.chainId?.toLowerCase() === chain.toLowerCase());
   
   return filteredPairs.map(p => ({ ...p, _sourceChain: chain }));
@@ -151,7 +146,6 @@ async function collectCandidates() {
     const addr = normalizeAddr(s.baseToken?.address || s.pairAddress || s.address || s.id);
     if (!addr) continue;
     
-    // Only keep the most relevant pair if multiple exist for the same token
     if (!map.has(addr) || (s.priceChange?.h1 || 0) > (map.get(addr).priceChange?.h1 || 0)) {
         map.set(addr, s);
     }
@@ -160,7 +154,69 @@ async function collectCandidates() {
   return Array.from(map.values());
 }
 
-// --- SCORING & FILTERING (ADJUSTED FOR V18.0) ---
+// --- SNIPER FILTERING (CRITICAL LOGIC) ---
+
+function passesCustomFilters(p) {
+  const liq = p.liquidity?.usd || 0;
+  const volH1 = p.volume?.h1 || 0;
+  const pairCreatedAt = p.pairCreatedAt;
+
+  // 1. MINIMUM LIQUIDITY 
+  if (liq < FILTER_SETTINGS.minLiquidityUsd) { 
+      return false; 
+  }
+  
+  // 2. VOLUME FILTER (30K - 400K)
+  if (volH1 < FILTER_SETTINGS.minVolumeUsd || volH1 > FILTER_SETTINGS.maxVolumeUsd) {
+      return false;
+  }
+
+  // 3. AGE FILTER (1 MIN - 30 MIN)
+  if (pairCreatedAt) {
+    const ageMs = Date.now() - pairCreatedAt;
+    
+    if (ageMs < FILTER_SETTINGS.minAgeMs || ageMs > FILTER_SETTINGS.maxAgeMs) {
+        return false;
+    }
+  } else {
+    // Cannot check age, so skip filter, but still requires volume and liquidity to pass.
+  }
+  
+  // 4. ONLY SOLANA
+  if (p._sourceChain !== 'solana') {
+      return false;
+  }
+  
+  return true;
+}
+
+function scorePair(p) {
+  const volH1 = p.volume?.h1 || 0;
+  const h1 = p.priceChange?.h1 || 0; 
+  const m5 = p.priceChange?.m5 || 0; 
+  const totalTxnsH1 = (p.txns?.h1?.buys || 0) + (p.txns?.h1?.sells || 0);
+  const liq = p.liquidity?.usd || 0;
+
+  let s = 50; // Base Score 
+  
+  // Reward for being close to the MINIMUM volume (early call)
+  if (volH1 < 50000) s += 10;
+  
+  // Reward for strong momentum
+  s += Math.min(h1 * 2, 10); 
+  s += Math.min(m5 * 3, 15); 
+  
+  // Reward for transactions and liquidity
+  if (totalTxnsH1 > 100) s += 10;
+  if (liq > 5000) s += 5;
+
+  // KEYWORD BOOST 
+  if (checkKeywords(p)) {
+      s += KEYWORD_BOOST; 
+  }
+
+  return Math.min(99, Math.round(s));
+}
 
 function checkKeywords(p) {
     const name = (p.baseToken?.name || "").toLowerCase();
@@ -175,89 +231,48 @@ function checkKeywords(p) {
     return false;
 }
 
-function scorePair(p) {
-  const liq = p.liquidity?.usd || 0;
-  const h1 = p.priceChange?.h1 || 0; 
-  const m5 = p.priceChange?.m5 || 0; 
-  const totalTxnsH1 = (p.txns?.h1?.buys || 0) + (p.txns?.h1?.sells || 0);
-
-  let s = 50; // HIGH BASE SCORE (50%) for being on the 'new' list
-  
-  // Score boost for momentum (less important now since we are aiming for the absolute start)
-  s += Math.min(h1 * 2, 10); 
-  s += Math.min(m5 * 3, 10); 
-  
-  // Score boost for transaction counts
-  if (totalTxnsH1 > MEME_SETTINGS.txnBoostThreshold) {
-      s += 10;
-  }
-
-  // Score boost for liquidity (adjusted tiers)
-  if (liq > 100) s += 5;
-  if (liq > 500) s += 5;
-  if (liq > 1000) s += 5;
-
-  // KEYWORD BOOST (The most aggressive filter left)
-  if (checkKeywords(p)) {
-      s += KEYWORD_BOOST; 
-  }
-
-  return Math.min(99, Math.round(s));
-}
-
-function passesMemeFilters(p) {
-  const liq = p.liquidity?.usd || 0;
-  
-  // 1. ABSOLUTE MINIMUM LIQUIDITY ($50)
-  if (liq < MEME_SETTINGS.minLiquidityUsd) { 
-      return false; 
-  }
-  
-  // 2. ONLY SOLANA
-  if (p._sourceChain !== 'solana') {
-      return false;
-  }
-  
-  // 3. NO PRICE CHANGE FILTER (let it call everything that has liquidity)
-  
-  return true;
-}
-
-// --- ANNOUNCEMENT (Same as previous versions) ---
+// --- ANNOUNCEMENT ---
 async function createCallEmbed(best) {
   const baseSym = best.baseToken?.symbol || "TOKEN";
   const liqUsd = best.liquidity?.usd || 0;
   const volH1 = best.volume?.h1 || 0;
   const mc = best.marketCap || best.fdv || 0;
   const score = best.score;
-  const totalTxnsH1 = (best.txns?.h1?.buys || 0) + (best.txns?.h1?.sells || 0);
 
+  // Calculate age for display
+  const pairCreatedAt = best.pairCreatedAt;
+  let ageText = "Unknown";
+  if (pairCreatedAt) {
+    const ageMs = Date.now() - pairCreatedAt;
+    const ageMin = Math.round(ageMs / 60000);
+    ageText = `${ageMin} minutes old`;
+  }
+  
   const chainName = (best._sourceChain || "SOLANA").toString().toUpperCase();
-  const color = score > 70 ? 0x00FF44 : score > 50 ? 0xFF9900 : 0xFF0000; 
-  const safety = liqUsd > 1000 ? "⚠️ MODERATE RISK" : "🚨 HIGH RISK (Low Liq)";
-  const statusEmoji = score > 70 ? "🔥🔥" : "🚀";
+  const color = score > 80 ? 0x00FF44 : score > 60 ? 0xFF9900 : 0xFF0000; 
+  const safety = liqUsd > 10000 ? "✅ LOW RISK" : liqUsd > 5000 ? "⚠️ MODERATE RISK" : "🚨 HIGH RISK (Low Liq)";
+  const statusEmoji = score > 80 ? "🔥" : "🚀";
 
   const embed = new EmbedBuilder()
     .setColor(color)
     .setTitle(`${statusEmoji} ${score}% PROBABILITY - ${BOT_NAME} CALL: $${baseSym} ${statusEmoji}`)
     .setDescription(
       [
-        `**Source:** \`${chainName} (MaxVelocity Scan)\``,
+        `**Source:** \`${chainName} (Volume/Age Filtered)\``,
         `**CA:** \`${best.baseToken?.address || best.pairAddress || "unknown"}\``,
         `---`,
+        `⏰ **Age:** ${ageText}`,
         `💰 **Mkt Cap:** $${(mc / 1000).toFixed(1)}K`,
         `💧 **Liquidity:** $${(liqUsd).toFixed(0)}`,
         `📈 **1H Momentum:** ${best.priceChange?.h1?.toFixed(1) || 0}%`,
         `📊 **1H Volume:** $${(volH1 / 1000).toFixed(1)}K`, 
-        `---`,
-        `🔄 **1H Transactions:** ${totalTxnsH1}`,
         `---`,
         `**Safety:** ${safety} - *Not financial advice. DYOR.*`,
         `**Join Our Community:** [Trade with 1G Vault on Axiom](${AXIOM_REF})`
       ].join("\n")
     )
     .setTimestamp()
-    .setFooter({ text: `Powered by ${BOT_NAME} | Join Axiom: ${AXIOM_REF}` }); 
+    .setFooter({ text: `Powered by ${BOT_NAME} | Filters: $${FILTER_SETTINGS.minVolumeUsd/1000}K-$${FILTER_SETTINGS.maxVolumeUsd/1000}K Vol` }); 
 
   const chartChain = best._sourceChain || best.chain || 'solana'; 
   const chartUrl = `https://dexscreener.com/${chartChain}/${best.addr}`;
@@ -269,6 +284,7 @@ async function createCallEmbed(best) {
   
   return { embeds: [embed], components: [buttons] };
 }
+
 
 async function dropCall() {
   try {
@@ -289,18 +305,19 @@ async function dropCall() {
 
       if (called.has(addr)) continue;
 
-      if (!passesMemeFilters(p)) {
+      // Primary filter check
+      if (!passesCustomFilters(p)) {
           continue;
       }
 
       const score = scorePair(p);
-      if (score < 50) continue; // Minimum score threshold for V18.0 is 50% base
+      if (score < 60) continue; 
 
       validCalls.push({ ...p, score, addr });
     }
 
     if (validCalls.length === 0) {
-      console.log(`[SCAN] No new candidates passed the minimum score (Liq $${MEME_SETTINGS.minLiquidityUsd} / Score 50%).`);
+      console.log(`[SCAN] No new candidates passed the filters (Age 1-30m / Vol $${FILTER_SETTINGS.minVolumeUsd/1000}K-$${FILTER_SETTINGS.maxVolumeUsd/1000}K / Score 60%).`);
       return;
     }
 
@@ -313,8 +330,8 @@ async function dropCall() {
     }
 
     let announcements = 0;
-    // Announce up to 5 of the top scored signals every cycle to increase volume
-    for (const best of validCalls.slice(0, 5)) { 
+    // Announce top 3 signals
+    for (const best of validCalls.slice(0, 3)) { 
         called.add(best.addr); 
         const messagePayload = await createCallEmbed(best);
 
@@ -343,7 +360,7 @@ async function dropCall() {
             });
         }
         
-        await sleep(500); // Small delay to avoid Discord rate limiting within the batch
+        await sleep(500); 
     }
 
     saveState();
@@ -353,7 +370,7 @@ async function dropCall() {
   }
 }
 
-// --- PNL / FLEX LOGIC (Same as previous versions) ---
+// --- PNL / FLEX LOGIC ---
 async function flexGains() {
     try {
         for (const [addr, data] of Array.from(tracking.entries())) {
@@ -381,7 +398,7 @@ async function flexGains() {
     
                  const gain = ((currentMC - data.entryMC) / data.entryMC) * 100;
     
-                 if (gain < MEME_SETTINGS.flexGainMinPct) continue;
+                 if (gain < FILTER_SETTINGS.flexGainMinPct) continue;
     
                  await postFlexReply(data, currentMC, currentLiq, gain);
                  tracking.get(addr).reported = true;
@@ -397,7 +414,7 @@ async function flexGains() {
           
           const gain = ((currentMC - data.entryMC) / data.entryMC) * 100;
           
-          if (gain < MEME_SETTINGS.flexGainMinPct) continue;
+          if (gain < FILTER_SETTINGS.flexGainMinPct) continue;
           
           await postFlexReply(data, currentMC, currentLiq, gain);
     
@@ -450,6 +467,7 @@ async function postFlexReply(data, currentMC, currentLiq, gain) {
 
 function startHealthCheck() {
     const SELF_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL || null;
+    const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; 
     if (!SELF_URL) {
         console.warn("[HEALTH] SELF_URL environment variable is not set. Bot may go idle.");
         return;
@@ -465,7 +483,7 @@ function startHealthCheck() {
 }
 
 
-// --- SCHEDULER & DISCORD INIT (Same as previous versions) ---
+// --- SCHEDULER & DISCORD INIT ---
 client.once("ready", async () => {
   console.log(`[BOT] ${BOT_NAME} LIVE — ${new Date().toISOString()}`);
   loadState();
@@ -488,7 +506,7 @@ client.once("ready", async () => {
   setInterval(saveState, SAVE_INTERVAL_MS);
 });
 
-// --- ADMIN COMMANDS (Same as previous versions) ---
+// --- ADMIN COMMANDS ---
 client.on("messageCreate", async (msg) => {
   if (!msg.content || msg.channel.id !== CHANNEL_ID) return;
   const t = msg.content.toLowerCase().trim();
@@ -499,7 +517,7 @@ client.on("messageCreate", async (msg) => {
     const embed = new EmbedBuilder()
       .setColor(0x00FF00)
       .setTitle(`🚀 ${BOT_NAME} IS ONLINE`)
-      .setDescription("Solana Sniper is running in **Extreme Spammer Mode ($50 Liq / 5s Scan)**.")
+      .setDescription(`Simulated Sniper is running with filters: **Vol $${FILTER_SETTINGS.minVolumeUsd/1000}K-$${FILTER_SETTINGS.maxVolumeUsd/1000}K / Age 1-30min**`)
       .setFooter({ text: `Status Check: ${BOT_NAME}` });
     await msg.reply({ embeds: [embed] });
   }
@@ -521,7 +539,7 @@ client.on("messageCreate", async (msg) => {
     const s = `Called: ${called.size}, Tracked: ${tracking.size}`;
     const embed = new EmbedBuilder()
       .setColor(0x0099FF)
-      .setTitle(`📊 ${BOT_NAME} STATS (Extreme Scan)`)
+      .setTitle(`📊 ${BOT_NAME} STATS (Simulated Velocity)`)
       .setDescription(s)
       .setFooter({ text: BOT_NAME });
     await msg.reply({ embeds: [embed] });
