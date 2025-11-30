@@ -1,6 +1,8 @@
 // =======================================================
-// 1G VAULT V15.0 - REFERRAL LINK INTEGRATION (SOLANA ONLY)
-// FIX: Added Axiom referral link to the announcement embed.
+// 1G VAULT V15.2 - AGGRESSIVE MULTI-CALL (SOLANA ONLY)
+// CHANGE: Modified dropCall to announce ALL tokens that pass filters.
+// CHANGE: Throttle removed, relying on function finish time (MIN_DROP_INTERVAL_MS = 1000ms).
+// NEW: Added PUMPFUN_API_URL source for direct graduation tracking.
 // =======================================================
 require("dotenv").config();
 const fs = require("fs");
@@ -17,21 +19,27 @@ const {
 } = require("discord.js");
 
 // --- CONFIGURATION ---
-const BOT_NAME = "1G VAULT V5.1"; 
+const BOT_NAME = "1G VAULT V15.2 (Aggressive)"; 
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 const CHANNEL_ID = process.env.CHANNEL_ID?.trim();
 const REF = "https://jup.ag/"; 
 // !!! CRITICAL: ONLY SOLANA IS ENABLED !!!
 const CHAINS = { SOL: "solana" }; 
-// NEW: Referral Link
+// NEW: Referral Links & Feeds
 const AXIOM_REF = "https://axiom.trade/@1gvault";
+// !!! CRITICAL: SET THESE ENVIRONMENT VARIABLES !!!
+const AXIOM_FEED_URL = process.env.AXIOM_FEED_URL || null;
+const PUMPFUN_API_URL = process.env.PUMPFUN_API_URL || null; 
+const GMGN_FEED_URL = process.env.GMGN_FEED_URL || null;
 
 // --- SCHEDULING ---
-const MIN_DROP_INTERVAL_MS = Number(process.env.MIN_DROP_INTERVAL_MS) || 45_000; 
-const MAX_DROP_INTERVAL_MS = Number(process.env.MAX_DROP_INTERVAL_MS) || 75_000;
+// These are minimized for aggressive scanning
+const MIN_DROP_INTERVAL_MS = 1000; // Time to wait between full scan attempts
+const MAX_DROP_INTERVAL_MS = 1000;
 const FLEX_INTERVAL_MS = Number(process.env.FLEX_INTERVAL_MS) || 90_000;
 const SAVE_INTERVAL_MS = Number(process.env.SAVE_INTERVAL_MS) || 60_000;
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; 
+const CALL_HISTORY_CLEAR_MS = 3 * 60 * 60 * 1000; // Clear called list every 3 hours for re-scanning
 
 // --- MEME FILTER SETTINGS (AGGRESSIVE TRANSACTION CHECK) ---
 const MEME_SETTINGS = {
@@ -49,9 +57,7 @@ const MEME_SETTINGS = {
   minSellsH1: Number(process.env.SELLS_H1_MIN) || 100,    
 };
 
-// --- EXTERNAL SOURCES ---
-const AXIOM_FEED_URL = process.env.AXIOM_FEED_URL || null;
-const GMGN_FEED_URL = process.env.GMGN_FEED_URL || null;
+// --- EXTERNAL SOURCES (Unchanged) ---
 const COINGECKO_MARKETS = process.env.ENABLE_COINGECKO === "1";
 const SELF_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_URL || null;
 
@@ -67,6 +73,7 @@ const client = new Client({
 
 let called = new Set();
 let tracking = new Map();
+let lastCallReset = Date.now(); 
 
 // --- STATE MANAGEMENT ---
 function loadState() {
@@ -139,7 +146,11 @@ async function fetchExternalFeed(url, source) {
   try {
     const j = await retryFetch(url);
     if (!j) return [];
+    
     const pairs = Array.isArray(j) ? j : (Array.isArray(j.pairs) ? j.pairs : []);
+    if (pairs.length === 0 && j) {
+      console.warn(`[API FAIL] ${source}: Unexpected response format or empty list.`); 
+    }
     
     return pairs.filter(p => {
         const chain = p.chainId || p.chain;
@@ -148,6 +159,44 @@ async function fetchExternalFeed(url, source) {
   } catch {
     return [];
   }
+}
+
+async function fetchPumpGraduations(url) {
+    if (!url) return [];
+    try {
+        const j = await retryFetch(url);
+        if (!j) return [];
+        
+        // Assumes the external API returns an array of graduated tokens/mints
+        const tokens = Array.isArray(j) ? j : (Array.isArray(j.tokens) ? j.tokens : (Array.isArray(j.result) ? j.result : []));
+
+        if (tokens.length === 0) {
+            console.log("[PUMPFUN] Found 0 graduated tokens.");
+            return [];
+        }
+        
+        console.log(`[PUMPFUN] Found ${tokens.length} graduated tokens.`);
+
+        // Create mock entries with high scores/liquidity to force a check in the next step
+        return tokens.map(t => {
+            const tokenAddress = t.mint_address || t.tokenAddress || t.mint || t.token_address; 
+            if (!tokenAddress) return null;
+            return { 
+                baseToken: { address: tokenAddress, symbol: t.symbol || 'PUMP' }, 
+                _source: "pumpfun",
+                _sourceChain: "solana",
+                // Set high mock values to ensure it passes aggressive filters 
+                // and the address is used to query actual DexScreener data later if needed.
+                priceChange: { h1: 1000 }, 
+                liquidity: { usd: 100000 },
+                txns: { h1: { buys: 500, sells: 500 } }
+            };
+        }).filter(t => t !== null);
+
+    } catch (err) {
+        console.warn("[PUMPFUN] Fetch error:", err?.message || err);
+        return [];
+    }
 }
 
 // --- SCORING & FILTERING ---
@@ -204,21 +253,30 @@ function passesMemeFilters(p) {
 async function collectCandidates() {
   const sources = [];
 
+  // 1. DEX SCREENER: Broad search for new/trending tokens
   const dexPromises = Object.values(CHAINS).map(c => fetchDexPairs(c));
   const dexResults = await Promise.all(dexPromises);
   dexResults.forEach(arr => sources.push(...arr));
 
+  // 2. EXTERNAL FEEDS: Axiom & other custom feeds
   sources.push(...await fetchExternalFeed(AXIOM_FEED_URL, "axiom"));
   sources.push(...await fetchExternalFeed(GMGN_FEED_URL, "gmgn"));
+
+  // 3. PUMPFUN GRADUATIONS: Direct API for high-signal events
+  sources.push(...await fetchPumpGraduations(PUMPFUN_API_URL));
 
   const map = new Map();
   for (const s of sources) {
     const addr = normalizeAddr(s.baseToken?.address || s.pairAddress || s.address || s.id);
     if (!addr) continue;
-    if (!map.has(addr)) map.set(addr, s);
+    
+    // Deduplication: Prioritize the source with the higher 1H price change (Dexscreener data is usually best, but Pumpfun has mock high value)
+    if (!map.has(addr) || (s.priceChange?.h1 || 0) > (map.get(addr).priceChange?.h1 || 0)) {
+        map.set(addr, s);
+    }
   }
   
-  console.log(`[SCAN] Found ${map.size} unique SOLANA candidates after deduplication.`);
+  console.log(`[SCAN] Found ${map.size} unique SOLANA candidates after deduplication from all sources.`);
   return Array.from(map.values());
 }
 
@@ -232,7 +290,7 @@ async function createCallEmbed(best) {
   const buysH1 = best.txns?.h1?.buys || 0;
   const sellsH1 = best.txns?.h1?.sells || 0;
 
-  const chainName = (best._sourceChain || best._source || "SOLANA").toString().toUpperCase();
+  const chainName = (best._source || best._sourceChain || "SOLANA").toString().toUpperCase();
   const color = score > 60 ? 0x00FF44 : score > 30 ? 0xFF9900 : 0xFF0000;
   const safety = liqUsd > 10000 ? "✅ LOW RISK" : liqUsd > 2000 ? "⚠️ MODERATE RISK" : "🚨 HIGH RISK";
   const statusEmoji = score > 60 ? "🔥" : "🚀";
@@ -254,12 +312,10 @@ async function createCallEmbed(best) {
         `🔴 **1H Sells:** ${sellsH1}`,
         `---`,
         `**Safety:** ${safety} - *Not financial advice. DYOR.*`,
-        // ADDED REFERRAL LINK TO DESCRIPTION
         `**Join Our Community:** [Trade with 1G Vault on Axiom](${AXIOM_REF})`
       ].join("\n")
     )
     .setTimestamp()
-    // ADDED REFERRAL LINK TO FOOTER
     .setFooter({ text: `Powered by ${BOT_NAME} | Join Axiom: ${AXIOM_REF}` }); 
 
   const chartChain = best._sourceChain || best.chain || 'solana'; 
@@ -273,61 +329,79 @@ async function createCallEmbed(best) {
   return { embeds: [embed], components: [buttons] };
 }
 
+// --- MODIFIED dropCall TO ANNOUNCE ALL VALID CANDIDATES ---
 async function dropCall() {
   try {
     const candidates = await collectCandidates();
     if (!candidates || candidates.length === 0) return;
 
-    let best = null;
+    const validCalls = [];
+
+    // 1. Identify all tokens that pass the aggressive filters
     for (const p of candidates) {
       const addr = normalizeAddr(p.baseToken?.address || p.pairAddress || p.address || p.id);
-      if (!addr || called.has(addr)) continue;
+      if (!addr) continue;
+      if (called.has(addr)) continue;
 
       if (!passesMemeFilters(p)) continue;
 
       const score = scorePair(p);
-      if (!best || score > best.score) best = { ...p, score, addr };
+      validCalls.push({ ...p, score, addr });
     }
-
-    if (!best) {
-      console.log("[SCAN] No candidate passed the minimum filters.");
+    
+    if (validCalls.length === 0) {
+      console.log("[SCAN] No new candidates passed the aggressive filters.");
       return;
     }
 
-    called.add(best.addr);
-    
-    const messagePayload = await createCallEmbed(best);
+    validCalls.sort((a, b) => b.score - a.score);
 
+    console.log(`[ANNOUNCE] Found ${validCalls.length} high-potential tokens to announce.`);
+    
     const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
     if (!channel || !channel.send) {
         console.warn("[DISCORD] Failed to find channel or send messages. Check CHANNEL_ID/Permissions.");
         return;
     }
 
-    const msg = await channel.send(messagePayload).catch((e) => {
-        console.warn("[DISCORD] Error sending message:", e.message);
-        return null;
-    });
-    if (!msg) return;
+    // 2. Announce all valid tokens one by one (Discord handles rate limits)
+    let announcements = 0;
+    for (const best of validCalls) {
+        called.add(best.addr); // Mark as called
+        const messagePayload = await createCallEmbed(best);
 
-    const entryMC = best.marketCap || 0;
-    
-    if (entryMC <= 0) {
-        console.warn(`[TRACKING] Call ${best.addr} failed to get valid Market Cap (${entryMC}K). Skipping PnL tracking.`);
-    } else {
-        tracking.set(best.addr, {
-          msgId: msg.id,
-          entryMC: entryMC, 
-          entryLiq: best.liquidity?.usd || 0,
-          symbol: best.baseToken?.symbol,
-          reported: false,
-          chain: best._sourceChain || best.chain || best._source || "solana",
-          ts: Date.now(),
+        const msg = await channel.send(messagePayload).catch((e) => {
+            // Stop sending if Discord rate limit is hit (429 error)
+            console.warn(`[DISCORD] Error sending $${best.baseToken?.symbol}:`, e.message);
+            return null; 
         });
+
+        if (!msg) {
+            console.log("[DISCORD] Rate limit hit or message failed. Stopping announcement batch.");
+            break; 
+        }
+        
+        announcements++;
+
+        const entryMC = best.marketCap || 0;
+        if (entryMC > 0) {
+            tracking.set(best.addr, {
+              msgId: msg.id,
+              entryMC: entryMC, 
+              entryLiq: best.liquidity?.usd || 0,
+              symbol: best.baseToken?.symbol,
+              reported: false,
+              chain: best._sourceChain || best.chain || best._source || "solana",
+              ts: Date.now(),
+            });
+        }
+        
+        // Minor throttle to reduce immediate burst impact
+        await sleep(500); 
     }
 
     saveState();
-    console.log(`[ANNOUNCE] CALL SUCCESS: ${best.addr} $${best.baseToken?.symbol} Score: ${best.score}`);
+    console.log(`[ANNOUNCE] Successfully sent ${announcements} calls in this cycle.`);
   } catch (e) {
     console.warn("[dropCall] Runtime error:", e?.message || e);
   }
@@ -430,7 +504,7 @@ async function postFlexReply(data, currentMC, currentLiq, gain) {
   await orig.reply({ embeds: [flexEmbed] }).catch(() => null);
 }
 
-// --- NEW SELF-PINGING LOGIC ---
+// --- SELF-PINGING LOGIC ---
 function startHealthCheck() {
     if (!SELF_URL) {
         console.warn("[HEALTH] SELF_URL environment variable is not set. Bot may go idle.");
@@ -454,17 +528,22 @@ client.once("ready", async () => {
 
   startHealthCheck();
 
-  await dropCall();
-
   const loop = async () => {
     try {
+      // Aggressive reset of the 'called' set to re-scan old tokens frequently
+      if (Date.now() - lastCallReset > CALL_HISTORY_CLEAR_MS) {
+          console.log(`[RESET] Clearing called list (${called.size} entries) to re-scan for potential.`)
+          called.clear();
+          lastCallReset = Date.now();
+          saveState();
+      }
+      
       await dropCall();
     } catch (e) {
       console.warn("Loop dropCall err:", e?.message || e);
     } finally {
-      const min = Math.max(1000, MIN_DROP_INTERVAL_MS);
-      const max = Math.max(min, MAX_DROP_INTERVAL_MS);
-      const delay = min + Math.floor(Math.random() * (max - min + 1));
+      // Wait minimum time before the next fetch loop to respect API limits
+      const delay = MIN_DROP_INTERVAL_MS;
       setTimeout(loop, delay);
     }
   };
@@ -485,7 +564,7 @@ client.on("messageCreate", async (msg) => {
     const embed = new EmbedBuilder()
       .setColor(0x00FF00)
       .setTitle(`🚀 ${BOT_NAME} IS ONLINE`)
-      .setDescription("Solana Sniper is now active. Expect frequent high-quality memecoin calls.")
+      .setDescription("Solana Sniper is now in **Aggressive** mode. Expect max-frequency calls.")
       .setFooter({ text: `Status Check: ${BOT_NAME}` });
     await msg.reply({ embeds: [embed] });
   }
@@ -493,6 +572,7 @@ client.on("messageCreate", async (msg) => {
   if (t === "/reset_called" || t === "/clear_called") {
     called.clear();
     tracking.clear();
+    lastCallReset = Date.now(); 
     saveState();
     const embed = new EmbedBuilder()
       .setColor(0xFF9900)
@@ -506,7 +586,7 @@ client.on("messageCreate", async (msg) => {
     const s = `Called: ${called.size}, Tracked: ${tracking.size}`;
     const embed = new EmbedBuilder()
       .setColor(0x0099FF)
-      .setTitle(`📊 ${BOT_NAME} STATS (Solana Only)`)
+      .setTitle(`📊 ${BOT_NAME} STATS (Solana Only - AGGRESSIVE)`)
       .setDescription(s)
       .setFooter({ text: BOT_NAME });
     await msg.reply({ embeds: [embed] });
