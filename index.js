@@ -263,4 +263,308 @@ function makeEmbed(pair, score, onChainResult, priority = false) {
     .setColor(color)
     .setTimestamp()
     .addFields(
-      { name: "Source", value: `${safe(pair,
+      { name: "Source", value: `${safe(pair, "source", "gmgn")}`, inline: true },
+      { name: "Age (s)", value: `${safe(pair, "ageSeconds", safe(pair, "pairAgeSeconds", "n/a"))}`, inline: true },
+      { name: "On-chain check", value: `${onChainResult?.ok ? "✅" : onChainResult?.ok === false ? "❌" : "⚠️"} ${onChainResult?.reason || ""}`, inline: false },
+    );
+
+  const buttons = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setLabel("View Chart").setStyle(ButtonStyle.Link).setURL(chartUrl),
+    new ButtonBuilder().setLabel("View on Dexscreener").setStyle(ButtonStyle.Link).setURL(chartUrl),
+    new ButtonBuilder().setLabel("SNIPE →").setStyle(ButtonStyle.Link).setURL("https://jup.ag/")
+  );
+
+  // QuickChart snapshot image (doughnut of liq)
+  const quickChart = `https://quickchart.io/chart?c={type:'doughnut',data:{labels:['Liquidity','Remaining'],datasets:[{data:[${Math.round(liq)},${Math.max(1, Math.round(mc - liq || 1))}] } ]}}`;
+  embed.setImage(quickChart);
+
+  return { embeds: [embed], components: [buttons] };
+}
+
+// Rate-limit-safe queue send
+function enqueueSend(payload, attempt = 0) {
+  sendQueue.push({ payload, attempt });
+  if (!queueRunning) processQueue();
+}
+async function processQueue() {
+  if (queueRunning) return;
+  queueRunning = true;
+  while (sendQueue.length > 0) {
+    const item = sendQueue.shift();
+    try {
+      const channel = await bot.channels.fetch(CHANNEL_ID);
+      if (!channel) throw new Error("channel-not-found");
+      // send embed or text
+      const sentMsg = await channel.send(item.payload);
+      // small delay
+      await sleep(QUEUE_BASE_DELAY_MS);
+      // on success, we may want to return the sent message object to caller - but here we store in tracking when announcing
+    } catch (e) {
+      console.warn("[QUEUE] send failed:", e?.message || e);
+      // retry with exponential backoff
+      if (item.attempt < QUEUE_MAX_RETRIES) {
+        item.attempt++;
+        const backoff = QUEUE_BASE_DELAY_MS * Math.pow(2, item.attempt);
+        await sleep(backoff);
+        sendQueue.unshift(item); // put back at front
+      } else {
+        console.warn("[QUEUE] dropping message after max retries");
+      }
+    }
+  }
+  queueRunning = false;
+}
+
+// Announce pair (with on-chain checks & queue)
+async function announcePair(pair, priority = false) {
+  try {
+    const addr = normalizeAddr(pair.baseToken?.address || pair.id || pair.pairAddress || pair.address);
+    if (!addr) return false;
+    if (sent.has(addr) && !WHITELIST.has(addr)) return false; // never repeat unless whitelisted
+
+    // quick numeric filters
+    const liq = safe(pair, "liquidity.usd", 0);
+    const vol = safe(pair, "volume.h1", 0) || safe(pair, "volume24hUSD", 0) || 0;
+    const mc = safe(pair, "marketCap", 0) || safe(pair, "fdv", 0) || 0;
+
+    if (!WHITELIST.has(addr)) {
+      if (liq < MIN_LIQ || liq > MAX_LIQ) { console.log(`[FILTER] liq fail ${addr}`); return false; }
+      if (vol < MIN_VOL || vol > MAX_VOL) { console.log(`[FILTER] vol fail ${addr}`); return false; }
+      if (mc < MIN_MC || mc > MAX_MC) { console.log(`[FILTER] mc fail ${addr}`); return false; }
+    }
+
+    const score = computeScore(pair);
+    if (!WHITELIST.has(addr) && score < MIN_SCORE) { console.log(`[FILTER] score fail ${score} ${addr}`); return false; }
+
+    // on-chain checks
+    const onChainResult = await onChainSafetyChecks(pair);
+    if (onChainResult?.ok === false && !WHITELIST.has(addr)) {
+      console.log(`[ONCHAIN] failed for ${addr}: ${onChainResult.reason}`);
+      return false;
+    }
+
+    const payload = makeEmbed(pair, score, onChainResult, priority);
+
+    // enqueue sending; but we want the sent message id to store tracking — so we send via queue but also attempt to get the message by sending directly with backoff wrapper
+    // We'll implement a send-with-retries that uses the queue delays
+    const sentMsg = await sendWithRetries(payload);
+
+    if (!sentMsg) return false;
+
+    // mark as sent and track
+    sent.add(addr);
+    tracking.set(addr, {
+      msgId: sentMsg.id,
+      channelId: CHANNEL_ID,
+      entryLiq: liq,
+      entryMC: mc,
+      symbol: (safe(pair, "baseToken.symbol") || "TOKEN").toUpperCase(),
+      ts: Date.now(),
+      score,
+    });
+    saveState();
+    console.log(`[ANNOUNCE] ${addr} posted (score ${score})`);
+    return true;
+  } catch (e) {
+    console.warn("[announcePair] error:", e?.message || e);
+    return false;
+  }
+}
+
+// sendWithRetries: does exponential backoff and returns the sent message object
+async function sendWithRetries(payload) {
+  let attempt = 0;
+  let lastErr = null;
+  while (attempt <= QUEUE_MAX_RETRIES) {
+    try {
+      const channel = await bot.channels.fetch(CHANNEL_ID);
+      if (!channel) throw new Error("channel-missing");
+      const sentMsg = await channel.send(payload);
+      // short pause
+      await sleep(QUEUE_BASE_DELAY_MS);
+      return sentMsg;
+    } catch (e) {
+      lastErr = e;
+      attempt++;
+      const backoff = QUEUE_BASE_DELAY_MS * Math.pow(2, attempt);
+      console.warn(`[SEND] attempt ${attempt} failed: ${e?.message || e}. backoff ${backoff}ms`);
+      await sleep(backoff);
+    }
+  }
+  console.warn("[SEND] all attempts failed:", lastErr?.message || lastErr);
+  return null;
+}
+
+// Fetch candidates (GMGN + Dexscreener)
+async function fetchGmgnCandidates() {
+  try {
+    const resp = await axios.get(GMGN_FEED, { timeout: 8000 });
+    const tokens = safe(resp, "data.tokens", []) || [];
+    return tokens.map(t => ({
+      baseToken: { address: t.ca || t.address || t.tokenAddress, symbol: t.symbol || t.name },
+      liquidity: { usd: t.liquidity || t.liqUsd || 0 },
+      volume: { h1: t.volumeH1 || t.vol24h || 0 },
+      marketCap: t.marketCap || t.mc || 0,
+      score: t.score || t.rating || 0,
+      source: (t.source || "gmgn").toLowerCase(),
+      chain: (t.chain || "solana").toLowerCase(),
+      ageSeconds: t.ageSeconds || (t.ageMinutes ? t.ageMinutes * 60 : 9999),
+      txns: t.txns || {},
+      pairAddress: t.pair || t.pairAddress || null,
+      id: t.ca || t.tokenAddress || t.address,
+    }));
+  } catch (e) {
+    console.warn("[GMGN] err", e?.message || e);
+    return [];
+  }
+}
+
+async function fetchDexScreenerNew() {
+  try {
+    const q = "new";
+    const resp = await axios.get(DEXSCREENER_SEARCH(q), { timeout: 8000 });
+    const pairs = safe(resp, "data.pairs", []) || safe(resp, "data", []) || [];
+    return pairs
+      .filter(p => (p.chainId || p.chain || "").toString().toLowerCase().includes("solana"))
+      .map(p => ({
+        baseToken: { address: p.baseToken?.address || p.baseToken?.tokenAddress || p.id, symbol: p.baseToken?.symbol || p.baseSymbol },
+        liquidity: { usd: p.liquidity?.usd || p.liquidity || 0 },
+        volume: { h1: p.volume?.h1 || p.volume || p.volume24hUSD || 0 },
+        marketCap: p.marketCap || p.fdv || 0,
+        score: p.score || 0,
+        source: (p._source || p.source || "dex").toLowerCase(),
+        chain: (p.chainId || p.chain || "solana").toLowerCase(),
+        ageSeconds: p.ageSeconds || p.pairAgeSeconds || 9999,
+        txns: p.txns || {},
+        pairAddress: p.pairAddress || p.pair || p.id,
+        id: p.baseToken?.address || p.baseToken?.tokenAddress || p.baseSymbol || p.id,
+      }));
+  } catch (e) {
+    console.warn("[DEXSCR] err", e?.message || e);
+    return [];
+  }
+}
+
+async function collectCandidates() {
+  const [g, d] = await Promise.all([fetchGmgnCandidates(), fetchDexScreenerNew()]);
+  const combined = [...g, ...d];
+  const map = new Map();
+  for (const p of combined) {
+    const addr = normalizeAddr(p.baseToken?.address || p.id || p.pairAddress);
+    if (!addr) continue;
+    if ((p.chain || "").toLowerCase() !== CHAIN) continue;
+    const src = (p.source || "").toLowerCase();
+    if (!ALLOWED_SOURCES.includes(src)) continue;
+    const existing = map.get(addr);
+    if (!existing) map.set(addr, p);
+    else {
+      const eLiq = safe(existing, "liquidity.usd", 0);
+      const pLiq = safe(p, "liquidity.usd", 0);
+      if (pLiq > eLiq) map.set(addr, p);
+    }
+  }
+  const results = Array.from(map.values());
+  console.log(`[COLLECT] ${results.length} candidates`);
+  return results;
+}
+
+// Main scan loop
+let scanning = false;
+async function scanLoop() {
+  if (scanning) return;
+  scanning = true;
+  try {
+    const candidates = await collectCandidates();
+    const early = [];
+    const normal = [];
+    for (const c of candidates) {
+      const age = Number(safe(c, "ageSeconds", safe(c, "pairAgeSeconds", 9999)));
+      if (age <= EARLY_ALERT_SECONDS) early.push(c);
+      else normal.push(c);
+    }
+    // early first
+    for (const p of early) {
+      try { await announcePair(p, true); } catch (e) { console.warn("[SCAN] early err", e.message || e); }
+      await sleep(400);
+    }
+    // normal
+    for (const p of normal) {
+      try { await announcePair(p, false); } catch (e) { console.warn("[SCAN] normal err", e.message || e); }
+      await sleep(600);
+    }
+  } catch (e) {
+    console.warn("[scanLoop] err", e?.message || e);
+  } finally {
+    scanning = false;
+  }
+}
+
+// Monitor posted messages and auto-delete if MC/Liq collapse
+async function monitorPosted() {
+  try {
+    if (tracking.size === 0) return;
+    for (const [addr, tdata] of Array.from(tracking.entries())) {
+      // dexscreener token endpoint
+      const url = `https://api.dexscreener.com/latest/dex/tokens/${addr}`;
+      const res = await axios.get(url, { timeout: 7000 }).catch(() => null);
+      const pairs = safe(res, "data.pairs", []) || [];
+      const p = pairs.find(pair => normalizeAddr(pair.baseToken?.address || pair.baseToken?.tokenAddress) === normalizeAddr(addr)) || pairs[0];
+      if (!p) continue;
+      const currentLiq = safe(p, "liquidity.usd", 0);
+      const currentMC = safe(p, "marketCap", 0) || safe(p, "fdv", 0) || 0;
+      const entryLiq = Number(tdata.entryLiq || 0);
+      const entryMC = Number(tdata.entryMC || 0);
+      if (entryMC > 0 && currentMC > 0) {
+        const mcDropPct = ((entryMC - currentMC) / entryMC) * 100;
+        if (mcDropPct >= DELETE_IF_MC_DROP_PCT) {
+          // delete
+          try {
+            const channel = await bot.channels.fetch(tdata.channelId);
+            const orig = await channel.messages.fetch(tdata.msgId).catch(() => null);
+            if (orig) {
+              await orig.delete().catch(() => null);
+              console.log(`[DELETE] removed ${addr} due to MC drop ${Math.round(mcDropPct)}%`);
+            }
+            tracking.delete(addr);
+            saveState();
+            continue;
+          } catch (e) { console.warn("[MON DEL] err", e.message || e); }
+        }
+      }
+      if (entryLiq > 0) {
+        const liqDropPct = ((entryLiq - currentLiq) / entryLiq) * 100;
+        if (liqDropPct >= DELETE_IF_LIQ_DROP_PCT) {
+          try {
+            const channel = await bot.channels.fetch(tdata.channelId);
+            const orig = await channel.messages.fetch(tdata.msgId).catch(() => null);
+            if (orig) {
+              await orig.delete().catch(() => null);
+              console.log(`[DELETE] removed ${addr} due to Liq drop ${Math.round(liqDropPct)}%`);
+            }
+            tracking.delete(addr);
+            saveState();
+            continue;
+          } catch (e) { console.warn("[MON DEL] err", e.message || e); }
+        }
+      }
+      // refresh timestamp
+      tdata.lastChecked = Date.now();
+      tracking.set(addr, tdata);
+    }
+  } catch (e) {
+    console.warn("[monitorPosted] err", e.message || e);
+  }
+}
+
+// Start listening
+bot.login(BOT_TOKEN).catch(e => {
+  console.error("[LOGIN] failed:", e?.message || e);
+  process.exit(1);
+});
+
+// Render keepalive
+const APP_PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end("Bot running OK");
+}).listen(APP_PORT, () => console.log(`[HTTP] listening on ${APP_PORT}`));
