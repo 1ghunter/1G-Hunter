@@ -1,14 +1,18 @@
 {
-  "name": "futures-signal-bot",
+  "name": "1G-Hunter",
   "version": "1.0.0",
-  "type": "module",
+  "description": "Discord signal bot using Smart Money / Price Action / Sniper entry",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "engines": {
+    "node": "18.x"
+  },
   "dependencies": {
-    "axios": "^1.6.2",
-    "discord.js": "^14.14.1",
-    "technicalindicators": "^3.0.10"
+    "axios": "^1.5.0",
+    "discord.js": "^14.13.0",
+    "cron": "^2.3.2",
+    "dotenv": "^16.1.4"
   }
 }
