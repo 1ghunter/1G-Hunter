@@ -1,226 +1,183 @@
-/* index.js - Render Ready Version */
+/* index.js - PROFESSIONAL SMC/SNIPER BOT
+   Strategy: Liquidity Sweeps + Market Structure Shift (MSS)
+   Risk Management: 1:3 Fixed RR
+   Platform: Render (Auto-Keep-Alive included)
+*/
 
 require('dotenv').config();
 const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 const Cron = require('cron').CronJob;
-const express = require('express'); // Added for Render
+const express = require('express');
 
-// --- PART 1: KEEP ALIVE SERVER (Required for Render Web Services) ---
+// --- 1. RENDER KEEPER (Prevents "Offline" Status) ---
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000; // Render usually uses 10000
 
 app.get('/', (req, res) => {
-  res.send('1G-Hunter Bot is running actively!');
+    res.send('✅ 1G-Hunter Bot is ACTIVE. SMC Scanners running.');
 });
 
-app.listen(PORT, () => {
-  console.log(`Web server is listening on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[SYSTEM] Web server listening on port ${PORT}`);
 });
-// --------------------------------------------------------------------
 
-// Configuration
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID;
-const SCAN_INTERVAL_MIN = Number(process.env.SCAN_INTERVAL_MIN || 15);
-const MAX_SIGNALS_PER_RUN = Number(process.env.MAX_SIGNALS_PER_RUN || 7);
+// --- 2. CREDENTIALS DEBUGGER ---
+// This block finds "hidden" spaces in your variables
+const TOKEN = process.env.DISCORD_TOKEN ? process.env.DISCORD_TOKEN.trim() : null;
+const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID ? process.env.DISCORD_CHANNEL_ID.trim() : null;
 
-// Symbols to monitor
-const SYMBOLS = ['BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','XAUUSD'];
-
-// Timeframes
-const TF_SHORT = '15m';
-const TF_LONG = '1h';
-
-// Binance Interval Map
-const INTERVAL_MAP = { '1m':'1m','3m':'3m','5m':'5m','15m':'15m','30m':'30m','1h':'1h','4h':'4h','1d':'1d' };
-
-// Logger
-function log(...args){ console.log(new Date().toISOString(), ...args); }
-
-// --- DATA FETCHING ---
-async function fetchKlines(symbol, interval, limit = 200){
-  try {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${INTERVAL_MAP[interval] || interval}&limit=${limit}`;
-    const res = await axios.get(url, { timeout: 10000 });
-    return res.data.map(k => ({
-      t: k[0],
-      open: parseFloat(k[1]),
-      high: parseFloat(k[2]),
-      low: parseFloat(k[3]),
-      close: parseFloat(k[4]),
-      volume: parseFloat(k[5])
-    }));
-  } catch (err) {
-    log(`fetchKlines error for ${symbol}:`, err?.message);
-    return [];
-  }
+console.log('--- DEBUGGING ENVIRONMENT ---');
+console.log(`Token Loaded: ${TOKEN ? 'YES (Length: ' + TOKEN.length + ')' : 'NO'}`);
+console.log(`Channel ID:   ${CHANNEL_ID ? 'YES' : 'NO'}`);
+if (!TOKEN || !CHANNEL_ID) {
+    console.error('❌ FATAL ERROR: Variables missing. Check Render Dashboard for typos/spaces.');
+    // We do NOT exit process here so the web server stays alive to let you read logs.
 }
 
-// --- HELPERS ---
-function candleBody(c){ return Math.abs(c.close - c.open); }
-function upperWick(c){ return c.high - Math.max(c.open,c.close); }
-function lowerWick(c){ return Math.min(c.open,c.close) - c.low; }
+// --- 3. TRADING CONFIGURATION ---
+const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT'];
+const TIMEFRAME = '15m'; 
+const LOOKBACK_CANDLES = 50; // How far back to look for swing points
 
-function roundPrice(p){
-  if (!isFinite(p)) return p;
-  if (p >= 1000) return Number(p.toFixed(2));
-  if (p >= 1) return Number(p.toFixed(4));
-  return Number(p.toFixed(6));
+// --- 4. DATA FETCHING (No API Key needed for Public Data) ---
+async function getCandles(symbol) {
+    try {
+        const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${TIMEFRAME}&limit=${LOOKBACK_CANDLES}`;
+        const res = await axios.get(url);
+        // Format: [Time, Open, High, Low, Close, Volume]
+        return res.data.map(k => ({
+            t: k[0],
+            o: parseFloat(k[1]),
+            h: parseFloat(k[2]),
+            l: parseFloat(k[3]),
+            c: parseFloat(k[4]),
+            v: parseFloat(k[5])
+        }));
+    } catch (e) {
+        console.error(`[API ERROR] Could not fetch ${symbol}: ${e.message}`);
+        return [];
+    }
 }
 
-// --- STRATEGY LOGIC ---
-async function analyzeSymbol(symbol){
-  const klShort = await fetchKlines(symbol, TF_SHORT, 200);
-  const klLong = await fetchKlines(symbol, TF_LONG, 200);
-  
-  // Need enough data
-  if (klShort.length < 30 || klLong.length < 30) return null;
+// --- 5. SMC ALGORITHM (The "Sniper" Logic) ---
+function analyzeSMC(symbol, candles) {
+    if (candles.length < 30) return null;
 
-  // Recent highs/lows for context
-  const recentHigh = Math.max(...klShort.slice(-12, -1).map(k => k.high));
-  const recentLow = Math.min(...klShort.slice(-12, -1).map(k => k.low));
+    // Get recent price action
+    const current = candles[candles.length - 1]; // Live candle (ignore)
+    const trigger = candles[candles.length - 2]; // Completed candle (Signal Trigger)
+    const prev = candles[candles.length - 3];    // Setup candle
 
-  let direction = null;
-  let triggerCandle = null;
+    // 1. Identify Swing Highs/Lows in the last 20 candles (excluding last 3)
+    const range = candles.slice(-23, -3);
+    const swingHigh = Math.max(...range.map(c => c.h));
+    const swingLow = Math.min(...range.map(c => c.l));
 
-  // Check last 6 candles for a Liquidity Grab (Wick)
-  for (let i = klShort.length - 6; i < klShort.length - 1; i++){
-    if (i < 0) continue;
-    const c = klShort[i];
+    let signal = null;
+
+    // --- SCENARIO A: SHORT (Bearish Sweep) ---
+    // Logic: Price wicked ABOVE old high (grabbed liquidity) but closed BELOW it.
+    if (trigger.h > swingHigh && trigger.c < swingHigh) {
+        // Confirmation: Strong displacement down (red candle)
+        if (trigger.c < trigger.o) {
+            const entry = trigger.c;
+            const stopLoss = trigger.h * 1.0005; // Just above the wick
+            const risk = Math.abs(stopLoss - entry);
+            
+            signal = {
+                type: 'SHORT',
+                setup: 'Liquidity Sweep (Bearish)',
+                entry: entry,
+                sl: stopLoss,
+                tp1: entry - (risk * 2), // 1:2
+                tp2: entry - (risk * 3), // 1:3 (Sniper)
+                risk: risk
+            };
+        }
+    }
+
+    // --- SCENARIO B: LONG (Bullish Sweep) ---
+    // Logic: Price wicked BELOW old low (grabbed liquidity) but closed ABOVE it.
+    if (trigger.l < swingLow && trigger.c > swingLow) {
+        // Confirmation: Strong displacement up (green candle)
+        if (trigger.c > trigger.o) {
+            const entry = trigger.c;
+            const stopLoss = trigger.l * 0.9995; // Just below the wick
+            const risk = Math.abs(entry - stopLoss);
+
+            signal = {
+                type: 'LONG',
+                setup: 'Liquidity Sweep (Bullish)',
+                entry: entry,
+                sl: stopLoss,
+                tp1: entry + (risk * 2),
+                tp2: entry + (risk * 3),
+                risk: risk
+            };
+        }
+    }
+
+    if (signal) {
+        signal.symbol = symbol;
+        signal.time = Date.now();
+        return signal;
+    }
+    return null;
+}
+
+// --- 6. DISCORD SIGNAL SENDER ---
+function createEmbed(s) {
+    const color = s.type === 'LONG' ? 0x00FF00 : 0xFF0000;
+    const emoji = s.type === 'LONG' ? '🟢' : '🔴';
+
+    return new EmbedBuilder()
+        .setTitle(`${emoji} ${s.type} SIGNAL: ${s.symbol}`)
+        .setDescription(`**Strategy:** ${s.setup}\n**Timeframe:** ${TIMEFRAME}`)
+        .setColor(color)
+        .addFields(
+            { name: 'ENTRY', value: `$${s.entry.toFixed(4)}`, inline: true },
+            { name: 'STOP LOSS', value: `$${s.sl.toFixed(4)}`, inline: true },
+            { name: 'RISK', value: '1.0%', inline: true },
+            { name: '🎯 TP 1 (1:2)', value: `$${s.tp1.toFixed(4)}`, inline: true },
+            { name: '🚀 TP 2 (1:3)', value: `$${s.tp2.toFixed(4)}`, inline: true },
+        )
+        .setFooter({ text: '1G-Hunter | SMC Logic | NFA' })
+        .setTimestamp();
+}
+
+async function runBot(client) {
+    console.log('[SCANNER] Starting market scan...');
+    const channel = await client.channels.fetch(CHANNEL_ID).catch(e => console.error("Bad Channel ID"));
     
-    // Bullish Grab (Long lower wick taking out lows)
-    if (lowerWick(c) > candleBody(c) * 2 && c.low < recentLow){
-      direction = 'LONG';
-      triggerCandle = c;
-      break;
+    if (!channel) return;
+
+    for (const symbol of SYMBOLS) {
+        const candles = await getCandles(symbol);
+        const signal = analyzeSMC(symbol, candles);
+
+        if (signal) {
+            console.log(`[SIGNAL] Found trade for ${symbol}`);
+            await channel.send({ embeds: [createEmbed(signal)] });
+        }
+        await new Promise(r => setTimeout(r, 500)); // Rate limit safety
     }
-    // Bearish Grab (Long upper wick taking out highs)
-    if (upperWick(c) > candleBody(c) * 2 && c.high > recentHigh){
-      direction = 'SHORT';
-      triggerCandle = c;
-      break;
-    }
-  }
-
-  if (!direction || !triggerCandle) return null;
-
-  // Look for Retest
-  let retestIndex = null;
-  for (let i = klShort.length - 6; i < klShort.length; i++){
-    const c = klShort[i];
-    if (direction === 'LONG' && c.close > triggerCandle.close) { retestIndex = i; break; }
-    if (direction === 'SHORT' && c.close < triggerCandle.close) { retestIndex = i; break; }
-  }
-  if (retestIndex === null) return null;
-
-  const retestCandle = klShort[retestIndex];
-  const buffer = retestCandle.close * 0.0006;
-  const entry = (direction === 'LONG') ? retestCandle.close + buffer : retestCandle.close - buffer;
-  
-  // Conservative Stop Loss
-  const SL = (direction === 'LONG') 
-    ? triggerCandle.low * 0.9994 
-    : triggerCandle.high * 1.0006;
-
-  const risk = Math.abs(entry - SL);
-  const tp1 = (direction === 'LONG') ? entry + risk * 2 : entry - risk * 2;
-  const tp2 = (direction === 'LONG') ? entry + risk * 3 : entry - risk * 3;
-
-  // Scoring
-  let score = 0;
-  if (direction === 'LONG') {
-    if (lowerWick(triggerCandle) > candleBody(triggerCandle) * 2.5) score += 2;
-  } else {
-    if (upperWick(triggerCandle) > candleBody(triggerCandle) * 2.5) score += 2;
-  }
-  
-  // Trend Confluence
-  const longLast = klLong[klLong.length - 1];
-  const longPrev = klLong[klLong.length - 5] || longLast;
-  if (direction === 'LONG' && longLast.close > longPrev.close) score += 1;
-  if (direction === 'SHORT' && longLast.close < longPrev.close) score += 1;
-
-  const probability = Math.min(95, 40 + score * 15);
-
-  return {
-    symbol, direction, 
-    entry: roundPrice(entry), 
-    stoploss: roundPrice(SL), 
-    tp1: roundPrice(tp1), tp2: roundPrice(tp2), 
-    probability, 
-    time: Date.now()
-  };
+    console.log('[SCANNER] Scan finished.');
 }
 
-// --- DISCORD EMBED ---
-function buildEmbed(signal){
-  const color = signal.direction === 'LONG' ? 0x22c55e : 0xef4444;
-  return new EmbedBuilder()
-    .setTitle(`⚡ ${signal.direction} SETUP: ${signal.symbol}`)
-    .setColor(color)
-    .addFields(
-      { name: 'Entry Zone', value: `${signal.entry}`, inline: true },
-      { name: 'Stop Loss', value: `${signal.stoploss}`, inline: true },
-      { name: 'Probability', value: `${signal.probability}%`, inline: true },
-      { name: 'TP 1 (2R)', value: `${signal.tp1}`, inline: true },
-      { name: 'TP 2 (3R)', value: `${signal.tp2}`, inline: true },
-    )
-    .setFooter({ text: '1G-Hunter | Smart Money Concepts' })
-    .setTimestamp();
+// --- 7. INITIALIZATION ---
+if (TOKEN && CHANNEL_ID) {
+    const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+    client.once('ready', () => {
+        console.log(`[DISCORD] Online as ${client.user.tag}`);
+        runBot(client); // Run immediately on start
+
+        // Schedule cron job (Every 15 mins at XX:00, XX:15, etc.)
+        new Cron('0 */15 * * * *', () => runBot(client), null, true, 'UTC');
+    });
+
+    client.login(TOKEN).catch(e => console.error("[LOGIN ERROR] Token invalid:", e.message));
+} else {
+    console.log("[SYSTEM] Bot waiting for valid Environment Variables...");
 }
-
-// --- MAIN RUNNER ---
-async function runScanAndPost(client){
-  try {
-    const channel = await client.channels.fetch(CHANNEL_ID);
-    if (!channel) { log('CRITICAL: Channel not found!'); return; }
-
-    let count = 0;
-    for (let symbol of SYMBOLS){
-      if (count >= MAX_SIGNALS_PER_RUN) break;
-      const s = await analyzeSymbol(symbol);
-      
-      if (s) {
-        log(`Signal found: ${s.symbol} ${s.direction}`);
-        await channel.send({ embeds: [buildEmbed(s)] });
-        count++;
-        await new Promise(r => setTimeout(r, 1000)); // Prevent rate limits
-      }
-    }
-    log(`Scan complete. Signals sent: ${count}`);
-  } catch (err){
-    log('runScanAndPost error:', err.message);
-  }
-}
-
-// --- BOT STARTUP ---
-async function startBot(){
-  // CRITICAL CHECK: If this fails, the variables are missing in Render Dashboard
-  if (!DISCORD_TOKEN || !CHANNEL_ID) {
-    console.error('\n!!! ERROR: MISSING ENVIRONMENT VARIABLES !!!');
-    console.error('You must set DISCORD_TOKEN and DISCORD_CHANNEL_ID in Render Dashboard > Environment.\n');
-    return; // We return instead of exit(1) so the web server stays alive to show logs
-  }
-
-  const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
-
-  client.once('ready', async () => {
-    log(`Logged in as ${client.user.tag}`);
-    
-    // Run once on startup
-    await runScanAndPost(client);
-
-    // Schedule: Runs every 15 minutes
-    const job = new Cron(`0 */${SCAN_INTERVAL_MIN} * * * *`, async () => {
-      log('Starting scheduled scan...');
-      await runScanAndPost(client);
-    }, null, true, 'UTC');
-
-    job.start();
-  });
-
-  client.login(DISCORD_TOKEN);
-}
-
-startBot();
