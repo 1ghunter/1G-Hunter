@@ -1,7 +1,6 @@
-/* index.js - PROFESSIONAL SMC/SNIPER BOT
-   Strategy: Liquidity Sweeps + Market Structure Shift (MSS)
-   Risk Management: 1:3 Fixed RR
-   Platform: Render (Auto-Keep-Alive included)
+/* index.js - FINAL DEFINITIVE VERSION
+   Strategy: Fair Value Gap (FVG) Retracement (1:3 RR)
+   Platform: Robust Deployment on Render
 */
 
 require('dotenv').config();
@@ -10,111 +9,117 @@ const axios = require('axios');
 const Cron = require('cron').CronJob;
 const express = require('express');
 
-// --- 1. RENDER KEEPER (Prevents "Offline" Status) ---
+// --- 1. RENDER KEEPER (Essential for 24/7 Uptime) ---
 const app = express();
-const PORT = process.env.PORT || 10000; // Render usually uses 10000
+const PORT = process.env.PORT || 10000; 
 
 app.get('/', (req, res) => {
-    res.send('✅ 1G-Hunter Bot is ACTIVE. SMC Scanners running.');
+    res.send('✅ 1G-Hunter Bot is ACTIVE. SMC FVG Scanners operational.');
 });
 
+// Use 0.0.0.0 for compatibility across cloud platforms
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[SYSTEM] Web server listening on port ${PORT}`);
+    console.log(`[SYSTEM] Keep-Alive Server listening on port ${PORT}`);
 });
+// ---------------------------------------------------
 
-// --- 2. CREDENTIALS DEBUGGER ---
-// This block finds "hidden" spaces in your variables
+// --- 2. CREDENTIALS AND CONFIG (Robust Check) ---
+// .trim() removes any potential invisible spaces from Render dashboard input
 const TOKEN = process.env.DISCORD_TOKEN ? process.env.DISCORD_TOKEN.trim() : null;
 const CHANNEL_ID = process.env.DISCORD_CHANNEL_ID ? process.env.DISCORD_CHANNEL_ID.trim() : null;
 
-console.log('--- DEBUGGING ENVIRONMENT ---');
-console.log(`Token Loaded: ${TOKEN ? 'YES (Length: ' + TOKEN.length + ')' : 'NO'}`);
-console.log(`Channel ID:   ${CHANNEL_ID ? 'YES' : 'NO'}`);
-if (!TOKEN || !CHANNEL_ID) {
-    console.error('❌ FATAL ERROR: Variables missing. Check Render Dashboard for typos/spaces.');
-    // We do NOT exit process here so the web server stays alive to let you read logs.
-}
-
-// --- 3. TRADING CONFIGURATION ---
-const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT'];
+// Trading Configuration
+const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'ADAUSDT', 'LTCUSDT'];
 const TIMEFRAME = '15m'; 
-const LOOKBACK_CANDLES = 50; // How far back to look for swing points
+const RR_RATIO = 3.0; // Fixed Risk/Reward target of 1:3
 
-// --- 4. DATA FETCHING (No API Key needed for Public Data) ---
-async function getCandles(symbol) {
+// Logger
+function log(...args){ console.log(new Date().toLocaleTimeString('en-US'), ...args); }
+
+// --- 3. DATA FETCHING (451 API FIX) ---
+// Using data.binance.com bypasses regional restrictions (Status 451)
+const BASE_URL = 'https://data.binance.com/api/v3'; 
+
+async function getCandles(symbol, interval = TIMEFRAME, limit = 100) {
     try {
-        const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${TIMEFRAME}&limit=${LOOKBACK_CANDLES}`;
-        const res = await axios.get(url);
-        // Format: [Time, Open, High, Low, Close, Volume]
+        const url = `${BASE_URL}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+        const res = await axios.get(url, { timeout: 15000 });
+        
+        // Map the array to a cleaner object structure
         return res.data.map(k => ({
-            t: k[0],
-            o: parseFloat(k[1]),
-            h: parseFloat(k[2]),
-            l: parseFloat(k[3]),
-            c: parseFloat(k[4]),
-            v: parseFloat(k[5])
+            t: k[0], o: parseFloat(k[1]), h: parseFloat(k[2]), 
+            l: parseFloat(k[3]), c: parseFloat(k[4]),
         }));
     } catch (e) {
-        console.error(`[API ERROR] Could not fetch ${symbol}: ${e.message}`);
+        // Report error but do not crash the scanner
+        log(`❌ [API ERROR] Failed to fetch ${symbol}. Check logs for Status 451: ${e.message}`);
         return [];
     }
 }
 
-// --- 5. SMC ALGORITHM (The "Sniper" Logic) ---
-function analyzeSMC(symbol, candles) {
-    if (candles.length < 30) return null;
+// --- 4. PROFESSIONAL SMC/FVG ALGORITHM ---
+// This logic finds the high-probability gap left by institutional displacement.
+function analyzeFVG(symbol, candles) {
+    if (candles.length < 5) return null;
 
-    // Get recent price action
-    const current = candles[candles.length - 1]; // Live candle (ignore)
-    const trigger = candles[candles.length - 2]; // Completed candle (Signal Trigger)
-    const prev = candles[candles.length - 3];    // Setup candle
-
-    // 1. Identify Swing Highs/Lows in the last 20 candles (excluding last 3)
-    const range = candles.slice(-23, -3);
-    const swingHigh = Math.max(...range.map(c => c.h));
-    const swingLow = Math.min(...range.map(c => c.l));
+    // Define the three key candles for FVG detection
+    const c1 = candles[candles.length - 4]; // The candle before the gap
+    const c2 = candles[candles.length - 3]; // The Displacement/Order Block candle
+    const c3 = candles[candles.length - 2]; // The most recent closed candle
 
     let signal = null;
 
-    // --- SCENARIO A: SHORT (Bearish Sweep) ---
-    // Logic: Price wicked ABOVE old high (grabbed liquidity) but closed BELOW it.
-    if (trigger.h > swingHigh && trigger.c < swingHigh) {
-        // Confirmation: Strong displacement down (red candle)
-        if (trigger.c < trigger.o) {
-            const entry = trigger.c;
-            const stopLoss = trigger.h * 1.0005; // Just above the wick
+    // --- BEARISH FVG CHECK (SHORT) ---
+    // Condition: C2 is bearish displacement AND a gap exists (C1 Low > C3 High)
+    if (c2.c < c2.o && c2.l < c1.l) { 
+        if (c1.l > c3.h) { 
+            const entryZoneTop = c1.l;
+            const entryZoneBottom = c3.h;
+            
+            // ENTRY: 50% Retracement of the FVG (The Sniper Entry)
+            const entry = (entryZoneTop + entryZoneBottom) / 2; 
+
+            // STOP LOSS: Above the High of the Order Block (C2)
+            const stopLoss = c2.h * 1.001; 
             const risk = Math.abs(stopLoss - entry);
             
-            signal = {
-                type: 'SHORT',
-                setup: 'Liquidity Sweep (Bearish)',
-                entry: entry,
-                sl: stopLoss,
-                tp1: entry - (risk * 2), // 1:2
-                tp2: entry - (risk * 3), // 1:3 (Sniper)
-                risk: risk
-            };
+            if (risk > 0) {
+                signal = {
+                    type: 'SHORT',
+                    setup: 'Bearish FVG Retracement',
+                    entry: entry,
+                    sl: stopLoss,
+                    tp: entry - (risk * RR_RATIO), 
+                    risk: risk
+                };
+            }
         }
     }
 
-    // --- SCENARIO B: LONG (Bullish Sweep) ---
-    // Logic: Price wicked BELOW old low (grabbed liquidity) but closed ABOVE it.
-    if (trigger.l < swingLow && trigger.c > swingLow) {
-        // Confirmation: Strong displacement up (green candle)
-        if (trigger.c > trigger.o) {
-            const entry = trigger.c;
-            const stopLoss = trigger.l * 0.9995; // Just below the wick
-            const risk = Math.abs(entry - stopLoss);
+    // --- BULLISH FVG CHECK (LONG) ---
+    // Condition: C2 is bullish displacement AND a gap exists (C1 High < C3 Low)
+    if (c2.c > c2.o && c2.h > c1.h) { 
+        if (c1.h < c3.l) { 
+            const entryZoneTop = c3.l;
+            const entryZoneBottom = c1.h;
 
-            signal = {
-                type: 'LONG',
-                setup: 'Liquidity Sweep (Bullish)',
-                entry: entry,
-                sl: stopLoss,
-                tp1: entry + (risk * 2),
-                tp2: entry + (risk * 3),
-                risk: risk
-            };
+            // ENTRY: 50% Retracement of the FVG 
+            const entry = (entryZoneTop + entryZoneBottom) / 2; 
+
+            // STOP LOSS: Below the Low of the Order Block (C2)
+            const stopLoss = c2.l * 0.999;
+            const risk = Math.abs(entry - stopLoss);
+            
+            if (risk > 0) {
+                signal = {
+                    type: 'LONG',
+                    setup: 'Bullish FVG Retracement',
+                    entry: entry,
+                    sl: stopLoss,
+                    tp: entry + (risk * RR_RATIO),
+                    risk: risk
+                };
+            }
         }
     }
 
@@ -126,58 +131,64 @@ function analyzeSMC(symbol, candles) {
     return null;
 }
 
-// --- 6. DISCORD SIGNAL SENDER ---
+// --- 5. DISCORD SENDER ---
 function createEmbed(s) {
     const color = s.type === 'LONG' ? 0x00FF00 : 0xFF0000;
     const emoji = s.type === 'LONG' ? '🟢' : '🔴';
 
     return new EmbedBuilder()
-        .setTitle(`${emoji} ${s.type} SIGNAL: ${s.symbol}`)
-        .setDescription(`**Strategy:** ${s.setup}\n**Timeframe:** ${TIMEFRAME}`)
+        .setTitle(`${emoji} SNIPER ${s.type} FVG SETUP: ${s.symbol} `)
+        .setDescription(`**Strategy:** ${s.setup} (${TIMEFRAME} TF)`)
         .setColor(color)
         .addFields(
-            { name: 'ENTRY', value: `$${s.entry.toFixed(4)}`, inline: true },
-            { name: 'STOP LOSS', value: `$${s.sl.toFixed(4)}`, inline: true },
-            { name: 'RISK', value: '1.0%', inline: true },
-            { name: '🎯 TP 1 (1:2)', value: `$${s.tp1.toFixed(4)}`, inline: true },
-            { name: '🚀 TP 2 (1:3)', value: `$${s.tp2.toFixed(4)}`, inline: true },
+            { name: '✅ Entry (50% FVG)', value: `$${s.entry.toFixed(4)}`, inline: true },
+            { name: '🛑 Stop Loss', value: `$${s.sl.toFixed(4)}`, inline: true },
+            { name: '🔥 R:R Ratio', value: `1:${RR_RATIO.toFixed(1)}`, inline: true },
+            { name: '🎯 Take Profit (3R)', value: `$${s.tp.toFixed(4)}`, inline: true },
         )
-        .setFooter({ text: '1G-Hunter | SMC Logic | NFA' })
-        .setTimestamp();
+        .setFooter({ text: '1G-Hunter | Smart Money Concepts | NFA' })
+        .setTimestamp(s.time);
 }
 
 async function runBot(client) {
-    console.log('[SCANNER] Starting market scan...');
-    const channel = await client.channels.fetch(CHANNEL_ID).catch(e => console.error("Bad Channel ID"));
-    
-    if (!channel) return;
+    log('[SCANNER] Starting FVG market scan...');
+    try {
+        const channel = await client.channels.fetch(CHANNEL_ID);
+        if (!channel) { log(`❌ CRITICAL: Channel ID ${CHANNEL_ID} not found or inaccessible.`); return; }
 
-    for (const symbol of SYMBOLS) {
-        const candles = await getCandles(symbol);
-        const signal = analyzeSMC(symbol, candles);
+        for (const symbol of SYMBOLS) {
+            const candles = await getCandles(symbol);
+            const signal = analyzeFVG(symbol, candles);
 
-        if (signal) {
-            console.log(`[SIGNAL] Found trade for ${symbol}`);
-            await channel.send({ embeds: [createEmbed(signal)] });
+            if (signal) {
+                log(`[SIGNAL] FVG trade found for ${symbol} - ${signal.type}`);
+                await channel.send({ embeds: [createEmbed(signal)] });
+            }
+            // Small pause for rate limit safety and cleaner logs
+            await new Promise(r => setTimeout(r, 700)); 
         }
-        await new Promise(r => setTimeout(r, 500)); // Rate limit safety
+        log('[SCANNER] Scan finished.');
+    } catch (err) {
+        log(`❌ [DISCORD ERROR] Failed to send signal: ${err.message}`);
     }
-    console.log('[SCANNER] Scan finished.');
 }
 
-// --- 7. INITIALIZATION ---
+// --- 6. INITIALIZATION & ENVIRONMENT CHECK ---
 if (TOKEN && CHANNEL_ID) {
     const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
     client.once('ready', () => {
-        console.log(`[DISCORD] Online as ${client.user.tag}`);
-        runBot(client); // Run immediately on start
+        log(`[DISCORD] Online as ${client.user.tag}`);
+        runBot(client); 
 
-        // Schedule cron job (Every 15 mins at XX:00, XX:15, etc.)
+        // Schedule cron job to run every 15 minutes
         new Cron('0 */15 * * * *', () => runBot(client), null, true, 'UTC');
     });
 
-    client.login(TOKEN).catch(e => console.error("[LOGIN ERROR] Token invalid:", e.message));
+    client.login(TOKEN).catch(e => log(`❌ [LOGIN ERROR] Invalid Token/Permissions. Check Discord Token: ${e.message}`));
 } else {
-    console.log("[SYSTEM] Bot waiting for valid Environment Variables...");
+    // Definitive error log if environment variables are STILL missing
+    log('!!! 🛑 CRITICAL ERROR: MISSING ENVIRONMENT VARIABLES !!!');
+    log(`Token set: ${!!TOKEN}. Channel ID set: ${!!CHANNEL_ID}.`);
+    log('Action REQUIRED: You must fix the variable names in the Render Dashboard.');
 }
